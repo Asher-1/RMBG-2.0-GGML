@@ -157,3 +157,91 @@ image.putalpha(mask)
 image.save("no_bg_image.png")
 ```
 
+## GGML CUDA and Vulkan inference
+
+This repository includes a device-resident GGML implementation of the complete
+RMBG-2.0 graph: two-scale Swin-L encoder, context/squeeze modules, decoder, deformable
+ASPP, and sigmoid alpha output. Weights and intermediates remain on the selected
+backend; only the input and final alpha cross the host/device boundary.
+
+The CUDA path has a dedicated Swin-L `head_dim=32` attention node. It combines
+shifted-window pack/unpack, QKV projection and split, relative-position bias, shifted
+masking, softmax, output projection, and token-order restoration. Vulkan executes the
+same end-to-end graph through validated GGML primitives plus exact F32 custom gathers
+for input patch extraction and Swin patch merge. Attention and deformable sampling
+remain primitive Vulkan graphs, so strict Vulkan does not yet match PyTorch CUDA latency.
+
+RTX 3060 12 GiB, batch 1, 1024x1024 model input, warm steady state:
+
+| Runtime | Mean latency | max alpha abs diff | Result |
+|---|---:|---:|---|
+| PyTorch CUDA FP32 | 705.45 ms | reference | baseline |
+| GGML CUDA fast | **592.29 ms** | 1.315e-3 | **1.19x faster** |
+| GGML CUDA strict FP32 | 763.56 ms | 1.122e-4 | strict parity |
+| GGML Vulkan FP32 | 1293.35 ms | 1.081e-4 | portable fallback |
+
+CUDA fast mode is the default: it selects TF32 Tensor Core GEMMs while retaining FP32
+accumulation. No alpha pixels exceed `2e-3` absolute error in the parity fixture. Set
+`RMBG_STRICT_MATH=1` when strict FP32 GEMM reproducibility is more important than
+throughput. The current comparison uses PyTorch 2.7.1+cu118 with TF32 disabled and 12
+warm steady-state iterations. Benchmark metadata is in
+[`docs/rmbg_benchmark.json`](docs/rmbg_benchmark.json).
+
+![PyTorch, GGML CUDA, and GGML Vulkan inference comparison](docs/rmbg_inference_comparison.png)
+
+![Mean end-to-end inference latency](docs/rmbg_latency_comparison.png)
+
+Build and run CUDA:
+
+```bash
+cmake -S . -B build-cuda -DRMBG_GGML_CUDA=ON -DRMBG_BUILD_TESTS=ON
+cmake --build build-cuda -j
+./build-cuda/rmbg-cli remove \
+  --model models/rmbg_f16.gguf \
+  --input input.png --output output.png --device cuda
+```
+
+Reproduce a benchmark and regenerate the figures:
+
+```bash
+python scripts/benchmark_full.py --input t4.png --gguf models/rmbg_f16.gguf \
+  --backend cuda --build-dir build-cuda --pytorch-device cuda --math fast --runs 5
+python scripts/plot_benchmarks.py
+```
+
+See [`docs/PORTING.md`](docs/PORTING.md) for graph ownership, backend fallbacks,
+strict-math flags, and parity details.
+See [`models/README.md`](models/README.md) for the distinction between deployable
+models, compatibility split weights, and unit-test subsets.
+The local Vulkan investigation and the resulting operator plan are in
+[`docs/VULKAN_RESEARCH.md`](docs/VULKAN_RESEARCH.md).
+
+### GGUF Precision Variants
+
+The `models/` directory contains complete, runtime-named GGUF files for the full graph:
+
+| Model | Size | CUDA strict mean | Vulkan strict mean | max alpha abs diff |
+|---|---:|---:|---:|---:|
+| `rmbg_f32.gguf` | 841.9 MiB | 644.53 ms | 1293.35 ms | 1.122e-4 |
+| `rmbg_f16.gguf` | 421.0 MiB | 655.18 ms | 1278.46 ms | 1.122e-4 |
+
+Both entries are batch 1, 1024x1024, five warm steady-state iterations on RTX 3060.
+F16 is the deployment default. Q8 has been removed from the RMBG release: its only
+parity-safe hybrid version saved 16.9 MiB relative to F16 but measured 648.72 ms CUDA /
+1278.50 ms Vulkan, so it was not faster on either backend. Full Q8 quantization also
+exceeded the `2e-3` alpha gate.
+
+Regenerate the variants from the validated split weights:
+
+```bash
+python scripts/quantize_rmbg_gguf.py \
+  --input models/development/encoder_f16.gguf models/development/decoder_alpha_f16.gguf \
+  --out models/rmbg_f32.gguf --format f32
+python scripts/quantize_rmbg_gguf.py \
+  --input models/development/encoder_f16.gguf models/development/decoder_alpha_f16.gguf \
+  --out models/rmbg_f16.gguf --format f16
+```
+
+Vulkan defaults to strict FP32 math. Set `RMBG_VULKAN_FAST=1` only when a measured
+`~5e-3` alpha difference is acceptable; on this RTX 3060 it reduces F32 latency to about
+887 ms, but does not meet the repository's strict `2e-3` gate.

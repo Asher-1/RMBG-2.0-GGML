@@ -1,0 +1,32 @@
+{
+  "parity_tests": {
+    "test_swin_block0": {
+      "passed": true,
+      "max_diff": "2.885e-05",
+      "mean_diff": "1.164e-06",
+      "time_ms": 20479.63337600231
+    },
+    "test_swin_stage0": {
+      "passed": true,
+      "max_diff": "5.728e-05",
+      "mean_diff": "1.201e-06",
+      "time_ms": 81505.46034798026
+    },
+    "test_decoder_squeeze": {
+      "passed": true,
+      "max_diff": "9.537e-06",
+      "mean_diff": "6.155e-07",
+      "time_ms": 19403.210761025548
+    }
+  },
+  "pytorch_inference": {
+    "device": "cpu",
+    "mean_ms": 15815.825277531985,
+    "std_ms": 159.59696850040928
+  },
+  "summary": {
+    "precision": "C++实现与PyTorch精度一致 (max_diff < 1e-3)",
+    "ggml_graph_status": "GGML推理图尚未完成，端到端C++推理暂不可用",
+    "gpu_backends": "CUDA/Vulkan后端需要完成GGML推理图后测试"
+  }
+}

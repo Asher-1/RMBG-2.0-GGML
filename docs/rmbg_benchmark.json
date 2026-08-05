@@ -1,0 +1,31 @@
+{
+  "date": "2026-08-04",
+  "model": "RMBG-2.0 unified F16 GGUF",
+  "input_size": "1024x1024",
+  "hardware": "NVIDIA GeForce RTX 3060 12 GiB, CUDA 11.8, Vulkan",
+  "images": {
+    "input": "t4.png",
+    "pytorch": "docs/benchmark_assets/pytorch.png",
+    "cuda": "docs/benchmark_assets/ggml-cuda.png",
+    "vulkan": "docs/benchmark_assets/ggml-vulkan.png"
+  },
+  "latency_ms": {
+    "pytorch_cpu": {"label": "PyTorch CPU", "mean": 13662.23, "color": "#9e9e9e", "chart": false},
+    "pytorch_cuda": {"label": "PyTorch CUDA", "mean": 705.45, "color": "#f58518"},
+    "ggml_cuda_fast": {"label": "GGML CUDA fast", "mean": 592.29, "color": "#54a24b"},
+    "ggml_cuda_strict": {"label": "GGML CUDA strict", "mean": 763.56, "color": "#2f6f3e"},
+    "ggml_vulkan": {"label": "GGML Vulkan", "mean": 1293.35, "color": "#4c78a8"}
+  },
+  "precision": {
+    "cuda_fast_max_abs_alpha_diff": 0.001315,
+    "cuda_fast_pixels_over_0_002": 0,
+    "cuda_strict_max_abs_alpha_diff": 0.0001122,
+    "vulkan_max_abs_alpha_diff": 0.0001081
+  },
+  "notes": [
+    "GGML strict and Vulkan timings use NVIDIA_TF32_OVERRIDE=0 or Vulkan FP32-disable flags.",
+    "PyTorch CUDA uses PyTorch 2.7.1+cu118 with TF32 disabled; each current CUDA timing uses 12 warm steady-state iterations.",
+    "GGML CUDA fast uses TF32 Tensor Cores; strict and Vulkan retain FP32 arithmetic. Vulkan timing remains the validated portable fallback measurement.",
+    "PyTorch and GGML output images are generated from the same t4.png input."
+  ]
+}
