@@ -179,7 +179,7 @@ SHA. Regenerate it after source, model, benchmark, or patch changes.
 The ggml submodule is pinned at:
 
 ```text
-06ca97616793248fadb410ea8d69c7511b2005e4
+90951f99af1fbebef3fbdd58ff5b8715b0bb9c43
 ```
 
 All local changes, including CUDA and Vulkan source, shaders, declarations, CMake
