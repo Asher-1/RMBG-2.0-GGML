@@ -27,6 +27,10 @@ struct Model {
     bool graph_ready = false;
 };
 
+// Low-level callers that create a ggml backend themselves must call this before
+// ggml_backend_init*. The high-level load_gguf API already does so.
+void configure_backend_profile(const char * device);
+
 bool load_gguf(const char * path, const char * device, Model & out, std::string & err);
 inline bool load_gguf(const char * path, Model & out, std::string & err) {
     return load_gguf(path, "auto", out, err);

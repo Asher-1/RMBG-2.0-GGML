@@ -50,7 +50,11 @@ struct GraphBuilder {
     bool use_cuda_custom = false;
     bool use_backend_custom = false;
     bool use_vulkan_custom = false;
+    bool use_vulkan_direct_conv = false;
     bool is_cpu_backend = false;
+    bool use_f16_gemm = false;
+    bool use_nn_gemm = false;
+    int f16_min_stage = 2;
     const WeightMap & weights;
     std::unordered_map<std::string, ggml_tensor *> weight_cache;
     std::vector<StaticBlob> blobs;
@@ -63,7 +67,36 @@ struct GraphBuilder {
         use_cuda_custom = name && std::strstr(name, "CUDA");
         use_backend_custom = name && (std::strstr(name, "CUDA") || std::strstr(name, "Vulkan"));
         use_vulkan_custom = name && std::strstr(name, "Vulkan");
+        const char * direct_conv = std::getenv("RMBG_VK_DIRECT_CONV");
+        use_vulkan_direct_conv = use_vulkan_custom && direct_conv && direct_conv[0] &&
+                                 std::strcmp(direct_conv, "0") != 0;
         is_cpu_backend = name && std::strstr(name, "CPU");
+        // F16-in/FP32-accumulate GEMMs for the Swin MLP linear layers.  The
+        // 10-bit FP16 mantissa matches TF32 precision while GeForce tensor
+        // cores run FP16 at twice the TF32 rate.  Strict mode (RMBG_STRICT_MATH
+        // or NVIDIA_TF32_OVERRIDE=0) keeps pure FP32; RMBG_CUDA_F16_GEMM=0
+        // opts out of the fast path.
+        const char * strict = std::getenv("RMBG_STRICT_MATH");
+        const char * tf32 = std::getenv("NVIDIA_TF32_OVERRIDE");
+        const bool strict_math = (strict && strict[0] && std::strcmp(strict, "0") != 0) ||
+                                 (tf32 && tf32[0] == '0');
+        const char * f16env = std::getenv("RMBG_CUDA_F16_GEMM");
+        // F16 activations measured max|d| = 3.5e-3 (all stages) and 3.46e-3
+        // (stages >= 2 only) — both above the 2e-3 parity gate because Swin-L
+        // MLP hidden activations carry outliers that F16 rounding amplifies
+        // across 18 stacked stage-2 blocks.  Disabled by default; opt in with
+        // RMBG_CUDA_F16_GEMM=1 for experimentation on tolerance-friendly uses.
+        const bool f16_enabled = f16env && f16env[0] && f16env[0] != '0';
+        use_f16_gemm = use_cuda_custom && !strict_math && f16_enabled;
+        const char * min_stage_env = std::getenv("RMBG_CUDA_F16_MIN_STAGE");
+        f16_min_stage = min_stage_env ? std::max(0, std::atoi(min_stage_env)) : 2;
+        // Pre-transposed NN weights for the Swin QKV/projection GEMMs.
+        // Measured on RTX 3060: fast (TF32) mode is bit-identical either way,
+        // and strict (FP32) gains only ~6 ms (643 -> 637 ms) because the TN
+        // 128x64 kernel already saturates the K-width weight-load path.  With
+        // ~1/3 extra Swin weight memory it stays opt-in.
+        const char * nn_env = std::getenv("RMBG_CUDA_NN_GEMM");
+        use_nn_gemm = use_cuda_custom && nn_env && nn_env[0] && nn_env[0] != '0';
     }
 
     ggml_tensor * weight(const std::string & name) {
@@ -105,9 +138,6 @@ struct GraphBuilder {
         if (found != weight_cache.end()) return found->second;
         const WeightTensor * source = weights.get_tensor(name.c_str());
         if (!source || source->shape.empty() || source->shape.size() > GGML_MAX_DIMS) return nullptr;
-        if (source->type == GGML_TYPE_F16) return weight(name);
-        const std::vector<float> * f32 = weights.get_f32(name.c_str());
-        if (!f32) return nullptr;
         int64_t ne[GGML_MAX_DIMS] = {1, 1, 1, 1};
         for (size_t i = 0; i < source->shape.size(); ++i) {
             ne[i] = source->shape[source->shape.size() - 1 - i];
@@ -117,10 +147,51 @@ struct GraphBuilder {
         ggml_set_name(tensor, cache_name.c_str());
         StaticBlob blob;
         blob.tensor = tensor;
-        std::vector<ggml_fp16_t> converted(f32->size());
-        for (size_t i = 0; i < f32->size(); ++i) converted[i] = ggml_fp32_to_fp16((*f32)[i]);
-        blob.bytes.resize(converted.size() * sizeof(ggml_fp16_t));
-        std::memcpy(blob.bytes.data(), converted.data(), blob.bytes.size());
+        if (source->type == GGML_TYPE_F16) {
+            // F16 model weights copy straight through; routing through weight()
+            // would expand them to F32 on the CUDA path.
+            blob.bytes = source->bytes;
+        } else {
+            const std::vector<float> * f32 = weights.get_f32(name.c_str());
+            if (!f32) return nullptr;
+            std::vector<ggml_fp16_t> converted(f32->size());
+            for (size_t i = 0; i < f32->size(); ++i) converted[i] = ggml_fp32_to_fp16((*f32)[i]);
+            blob.bytes.resize(converted.size() * sizeof(ggml_fp16_t));
+            std::memcpy(blob.bytes.data(), converted.data(), blob.bytes.size());
+        }
+        blobs.push_back(std::move(blob));
+        weight_cache.emplace(cache_name, tensor);
+        return tensor;
+    }
+
+    // cuBLAS on Ampere picks wider tiles (e.g. 128x128) for NN-layout sgemm
+    // than for the OP_T path over [in, out] row-major weights.  The transposed
+    // [out, in] copy is built once here (ne[0] = out_rows, "__nn" name suffix)
+    // and only the CUDA custom Swin node consumes it — the primitive path and
+    // Vulkan keep the original layout.  Costs ~1/3 extra Swin weight memory.
+    ggml_tensor * weight_nn(const std::string & name) {
+        const std::string cache_name = name + "__nn";
+        auto found = weight_cache.find(cache_name);
+        if (found != weight_cache.end()) return found->second;
+        const WeightTensor * source = weights.get_tensor(name.c_str());
+        const std::vector<float> * f32 = weights.get_f32(name.c_str());
+        if (!source || source->shape.size() != 2 || !f32 ||
+            f32->size() != (size_t) source->shape[0] * source->shape[1]) {
+            return nullptr;
+        }
+        const int64_t out = source->shape[0];
+        const int64_t in = source->shape[1];
+        std::vector<float> transposed(f32->size());
+        for (int64_t o = 0; o < out; ++o)
+            for (int64_t i = 0; i < in; ++i)
+                transposed[(size_t) i * out + o] = (*f32)[(size_t) o * in + i];
+        const int64_t ne[GGML_MAX_DIMS] = {out, in, 1, 1};
+        ggml_tensor * tensor = ggml_new_tensor(stat, GGML_TYPE_F32, 2, ne);
+        ggml_set_name(tensor, cache_name.c_str());
+        StaticBlob blob;
+        blob.tensor = tensor;
+        blob.bytes.resize(transposed.size() * sizeof(float));
+        std::memcpy(blob.bytes.data(), transposed.data(), blob.bytes.size());
         blobs.push_back(std::move(blob));
         weight_cache.emplace(cache_name, tensor);
         return tensor;
@@ -165,17 +236,28 @@ struct GraphBuilder {
         ggml_tensor * gamma = weight(prefix + "weight");
         ggml_tensor * beta = weight(prefix + "bias");
         if (!gamma || !beta) return nullptr;
+        // One fused norm+scale+shift node replaces the norm -> mul -> add
+        // chain; backends without the custom op keep the primitive path.
+        ggml_tensor * args[] = {x, gamma, beta};
+        ggml_tensor * fused = ggml_custom_4d(ctx, GGML_TYPE_F32,
+            x->ne[0], x->ne[1], x->ne[2], x->ne[3], args, 3,
+            nullptr, GGML_N_TASKS_MAX, nullptr);
+        ggml_set_name(fused, "rmbg_layer_norm");
+        if (use_cuda_custom && ggml_backend_supports_op(backend, fused)) return fused;
         x = ggml_norm(ctx, x, 1e-5f);
         x = ggml_mul(ctx, x, gamma);
         return ggml_add(ctx, x, beta);
     }
 
     ggml_tensor * linear(ggml_tensor * x, const std::string & weight_name,
-                         const std::string & bias_name = {}) {
-        ggml_tensor * w = weight(weight_name);
+                         const std::string & bias_name = {}, bool fp16 = false) {
+        // fp16 keeps the weight in F16 so the CUDA cuBLAS path runs F16 inputs
+        // with FP32 accumulate (GeForce tensor cores are 2x TF32 rate). It is
+        // only requested on the CUDA fast path; strict mode keeps F32.
+        ggml_tensor * w = fp16 ? weight_f16(weight_name) : weight(weight_name);
         if (!w) return nullptr;
         ggml_tensor * out = ggml_mul_mat(ctx, w, x);
-        ggml_mul_mat_set_prec(out, GGML_PREC_F32);
+        if (!fp16) ggml_mul_mat_set_prec(out, GGML_PREC_F32);
         return bias_name.empty() ? out : add_bias_tokens(out, bias_name);
     }
 
@@ -195,12 +277,23 @@ struct GraphBuilder {
             return weights.get_f32((prefix + "bias").c_str())
                 ? add_bias_spatial(out, prefix + "bias") : out;
         }
+        if (use_vulkan_direct_conv) {
+            out = ggml_conv_2d_direct(ctx, w, input, stride, stride, pad, pad, 1, 1);
+            std::snprintf(custom_name, sizeof(custom_name), "rmbg_conv2d_%s", prefix.c_str());
+            ggml_set_name(out, custom_name);
+            if (ggml_backend_supports_op(backend, out)) {
+                return weights.get_f32((prefix + "bias").c_str())
+                    ? add_bias_spatial(out, prefix + "bias") : out;
+            }
+        }
         ggml_tensor * col = ggml_im2col(ctx, w, input, stride, stride, pad, pad,
                                         1, 1, true, GGML_TYPE_F32);
         out = ggml_mul_mat(
             ctx,
             ggml_reshape_2d(ctx, col, col->ne[0], col->ne[1] * col->ne[2] * col->ne[3]),
             ggml_reshape_2d(ctx, w, w->ne[0] * w->ne[1] * w->ne[2], w->ne[3]));
+        std::snprintf(custom_name, sizeof(custom_name), "rmbg_mm_%s", prefix.c_str());
+        ggml_set_name(out, custom_name);
         ggml_mul_mat_set_prec(out, GGML_PREC_F32);
         out = ggml_reshape_4d(ctx, out, col->ne[1], col->ne[2], col->ne[3], w->ne[3]);
         out = ggml_cont(ctx, ggml_permute(ctx, out, 0, 1, 3, 2));
@@ -224,14 +317,13 @@ struct GraphBuilder {
                                    scale, "bn_scale");
         ggml_tensor * b = constant(GGML_TYPE_F32, {1, 1, (int64_t) shift.size(), 1},
                                    shift, "bn_shift");
-        if (relu) {
-            ggml_tensor * args[] = {x, s, b};
-            ggml_tensor * fused = ggml_custom_4d(ctx, GGML_TYPE_F32,
-                x->ne[0], x->ne[1], x->ne[2], x->ne[3], args, 3,
-                nullptr, GGML_N_TASKS_MAX, nullptr);
-            ggml_set_name(fused, "rmbg_affine_relu");
-            if (use_backend_custom && ggml_backend_supports_op(backend, fused)) return fused;
-        }
+        // CUDA and Vulkan both cover the affine transform with optional ReLU.
+        ggml_tensor * args[] = {x, s, b};
+        ggml_tensor * fused = ggml_custom_4d(ctx, GGML_TYPE_F32,
+            x->ne[0], x->ne[1], x->ne[2], x->ne[3], args, 3,
+            nullptr, GGML_N_TASKS_MAX, nullptr);
+        ggml_set_name(fused, relu ? "rmbg_affine_relu" : "rmbg_affine");
+        if (use_backend_custom && ggml_backend_supports_op(backend, fused)) return fused;
         x = ggml_add(ctx, ggml_mul(ctx, x, s), b);
         return relu ? ggml_relu(ctx, x) : x;
     }
@@ -425,6 +517,9 @@ struct GraphBuilder {
         }
         ggml_tensor * out = ggml_mul_mat(ctx,
             ggml_reshape_2d(ctx, regular, (int64_t) C * K, regular->ne[3]), stacked);
+        char matmul_name[GGML_MAX_NAME];
+        std::snprintf(matmul_name, sizeof(matmul_name), "rmbg_mm_%s", prefix.c_str());
+        ggml_set_name(out, matmul_name);
         ggml_mul_mat_set_prec(out, GGML_PREC_F32);
         out = tokens_to_spatial(out, H, W);
         return weights.get_f32(bias_name.c_str()) ? add_bias_spatial(out, bias_name) : out;
@@ -647,10 +742,23 @@ struct GraphBuilder {
         ggml_tensor * proj_weight = weight(p + "attn_proj_weight");
         ggml_tensor * proj_bias = weight(p + "attn_proj_bias");
         if (!qkv_weight || !qkv_bias || !proj_weight || !proj_bias) return nullptr;
+        // The CUDA node's QKV/projection GEMMs go through cuBLAS; feeding it
+        // the NN copies issues OP_N sgemm (wider Ampere tiles) instead of OP_T.
+        // The primitive path below keeps the original-layout weights.
+        ggml_tensor * qkv_gemm = qkv_weight;
+        ggml_tensor * proj_gemm = proj_weight;
+        if (use_nn_gemm) {
+            if (ggml_tensor * qkv_nn = weight_nn(p + "attn_qkv_weight")) {
+                qkv_gemm = qkv_nn;
+            }
+            if (ggml_tensor * proj_nn = weight_nn(p + "attn_proj_weight")) {
+                proj_gemm = proj_nn;
+            }
+        }
 
         ggml_tensor * attention_input = tokens;
         ggml_tensor * args[] = {
-            attention_input, qkv_weight, qkv_bias, proj_weight, proj_bias, rpb_tensor,
+            attention_input, qkv_gemm, qkv_bias, proj_gemm, proj_bias, rpb_tensor,
         };
         ggml_tensor * fused = ggml_custom_4d(ctx, GGML_TYPE_F32, C, L, 1, 1,
             args, 6, nullptr, GGML_N_TASKS_MAX, nullptr);
@@ -694,8 +802,15 @@ struct GraphBuilder {
             }
             if (taps && stage == 0 && block == 0) taps->block0_windows = windows;
 
-            ggml_tensor * qkv = ggml_mul_mat(ctx, qkv_weight, windows);
-            ggml_mul_mat_set_prec(qkv, GGML_PREC_F32);
+            // Flatten the window batch into one [C, N*nW] matrix before the
+            // projections: the Vulkan matmul shader sustains ~5.3 TFLOPS at
+            // n=4096 but only ~3.3 TFLOPS when the same GEMM runs as n=144
+            // batch slices.  Both reshapes are zero-copy views and the K
+            // accumulation order is unchanged.
+            ggml_tensor * windows_flat = ggml_reshape_2d(ctx, windows, C, N * nW);
+            ggml_tensor * qkv_mm = ggml_mul_mat(ctx, qkv_weight, windows_flat);
+            ggml_mul_mat_set_prec(qkv_mm, GGML_PREC_F32);
+            ggml_tensor * qkv = ggml_reshape_3d(ctx, qkv_mm, 3 * C, N, nW);
 
             // Vulkan consumes the QKV projection directly in the layout used by
             // attention. This removes the broadcast add and six materialized
@@ -734,40 +849,6 @@ struct GraphBuilder {
                 v = ggml_cont(ctx, ggml_permute(ctx, v, 0, 2, 1, 3));
             }
 
-            // Flash Attention consumes the complete shifted-window mask.  The
-            // mask stores relative-position bias and region blocking together,
-            // so QK, softmax, and AV never materialize an N*N score tensor.
-            std::vector<ggml_fp16_t> mask_f16((size_t) N * N * heads * nW);
-            const int windows_w = Wp / ws;
-            for (int win = 0; win < nW; ++win) {
-                const int wh = (win / windows_w) * ws;
-                const int ww = (win % windows_w) * ws;
-                for (int head = 0; head < heads; ++head) {
-                    for (int qi = 0; qi < N; ++qi) {
-                        const int qr = (wh + qi / ws);
-                        const int qc = (ww + qi % ws);
-                        const int qregion = shift == 0 ? 0 :
-                            ((qr < Hp - ws ? 0 : (qr < Hp - shift ? 1 : 2)) * 3 +
-                             (qc < Wp - ws ? 0 : (qc < Wp - shift ? 1 : 2)));
-                        for (int ki = 0; ki < N; ++ki) {
-                            const int kr = wh + ki / ws;
-                            const int kc = ww + ki % ws;
-                            const int kregion = shift == 0 ? 0 :
-                                ((kr < Hp - ws ? 0 : (kr < Hp - shift ? 1 : 2)) * 3 +
-                                 (kc < Wp - ws ? 0 : (kc < Wp - shift ? 1 : 2)));
-                            float value = rpb[(size_t) ki + (size_t) N *
-                                               (qi + (size_t) N * head)];
-                            if (shift && qregion != kregion) value = -100.f;
-                            mask_f16[(size_t) ki + (size_t) N *
-                                     (qi + (size_t) N *
-                                      (head + (size_t) heads * win))] =
-                                ggml_fp32_to_fp16(value);
-                        }
-                    }
-                }
-            }
-            ggml_tensor * swin_mask = constant(GGML_TYPE_F16,
-                {N, N, heads, nW}, mask_f16, "swin_mask");
             // The scalar Flash path accepts F32 Q/K/V and accumulates in F32.
             // Cooperative matrices need F16 K/V on current Vulkan devices, so
             // they are an explicit opt-in until the endpoint parity gate says
@@ -785,10 +866,50 @@ struct GraphBuilder {
                 ? std::atoi(flash_env + 4) : -1;
             const bool flash_coop = coop_requested &&
                 (coop_stage < 0 || coop_stage == stage);
-            // F32 scalar Flash remains valid in strict mode.  Only the
-            // cooperative variant requires the device F16 path.
-            const bool use_flash = use_vulkan_custom && flash_env && !flash_disabled &&
+            // F32 scalar Flash is the Vulkan default: it measured ~35 ms
+            // faster than the batched QK/softmax/AV path and stays valid in
+            // strict mode.  RMBG_VK_FLASH_ATTN=0 restores the materialized
+            // score tensor.  Only the cooperative variant needs device F16.
+            const bool use_flash = use_vulkan_custom && !flash_disabled &&
                 (!disable_vk_f16 || !flash_coop);
+            ggml_tensor * swin_mask = nullptr;
+            if (use_flash) {
+                // Flash Attention consumes the complete shifted-window mask.
+                // The mask stores relative-position bias and region blocking
+                // together, so QK, softmax, and AV never materialize an N*N
+                // score tensor.
+                std::vector<ggml_fp16_t> mask_f16((size_t) N * N * heads * nW);
+                const int windows_w = Wp / ws;
+                for (int win = 0; win < nW; ++win) {
+                    const int wh = (win / windows_w) * ws;
+                    const int ww = (win % windows_w) * ws;
+                    for (int head = 0; head < heads; ++head) {
+                        for (int qi = 0; qi < N; ++qi) {
+                            const int qr = (wh + qi / ws);
+                            const int qc = (ww + qi % ws);
+                            const int qregion = shift == 0 ? 0 :
+                                ((qr < Hp - ws ? 0 : (qr < Hp - shift ? 1 : 2)) * 3 +
+                                 (qc < Wp - ws ? 0 : (qc < Wp - shift ? 1 : 2)));
+                            for (int ki = 0; ki < N; ++ki) {
+                                const int kr = wh + ki / ws;
+                                const int kc = ww + ki % ws;
+                                const int kregion = shift == 0 ? 0 :
+                                    ((kr < Hp - ws ? 0 : (kr < Hp - shift ? 1 : 2)) * 3 +
+                                     (kc < Wp - ws ? 0 : (kc < Wp - shift ? 1 : 2)));
+                                float value = rpb[(size_t) ki + (size_t) N *
+                                                   (qi + (size_t) N * head)];
+                                if (shift && qregion != kregion) value = -100.f;
+                                mask_f16[(size_t) ki + (size_t) N *
+                                         (qi + (size_t) N *
+                                          (head + (size_t) heads * win))] =
+                                    ggml_fp32_to_fp16(value);
+                            }
+                        }
+                    }
+                }
+                swin_mask = constant(GGML_TYPE_F16,
+                    {N, N, heads, nW}, mask_f16, "swin_mask");
+            }
             ggml_tensor * k_attn = use_flash && flash_coop ? ggml_cast(ctx, k, GGML_TYPE_F16) : k;
             ggml_tensor * v_attn = use_flash && flash_coop ? ggml_cast(ctx, v, GGML_TYPE_F16) : v;
             ggml_tensor * attended = nullptr;
@@ -799,7 +920,7 @@ struct GraphBuilder {
                 // Flash output is contiguous [head_dim, head, token, window].
                 // Reshaping merges lane and head directly into the projection's
                 // channel axis; permuting here would scramble head ownership.
-                attended = ggml_reshape_3d(ctx, attn, C, N, nW);
+                attended = ggml_reshape_2d(ctx, attn, C, N * nW);
             } else {
                 ggml_tensor * attn_scores = ggml_mul_mat(
                     ctx, k, ggml_scale(ctx, q, 1.f / std::sqrt((float) hd)));
@@ -817,10 +938,11 @@ struct GraphBuilder {
                 attended = ggml_mul_mat(ctx, vt, attn_scores);
                 ggml_mul_mat_set_prec(attended, GGML_PREC_F32);
                 attended = ggml_cont(ctx, ggml_permute(ctx, attended, 0, 2, 1, 3));
-                attended = ggml_reshape_3d(ctx, attended, C, N, nW);
+                attended = ggml_reshape_2d(ctx, attended, C, N * nW);
             }
-            windows = ggml_mul_mat(ctx, proj_weight, attended);
-            ggml_mul_mat_set_prec(windows, GGML_PREC_F32);
+            ggml_tensor * proj_mm = ggml_mul_mat(ctx, proj_weight, attended);
+            ggml_mul_mat_set_prec(proj_mm, GGML_PREC_F32);
+            windows = ggml_reshape_3d(ctx, proj_mm, C, N, nW);
             windows = ggml_add(ctx, windows, proj_bias);
             if (taps && stage == 0 && block == 0) taps->block0_attended_windows = windows;
 
@@ -853,10 +975,11 @@ struct GraphBuilder {
 
         shortcut = tokens;
         tokens = layer_norm(tokens, p + "norm2_");
-        tokens = linear(tokens, p + "mlp_fc1_weight", p + "mlp_fc1_bias");
+        const bool mlp_f16 = use_f16_gemm && stage >= f16_min_stage;
+        tokens = linear(tokens, p + "mlp_fc1_weight", p + "mlp_fc1_bias", mlp_f16);
         if (!tokens) return nullptr;
         tokens = ggml_gelu_erf(ctx, tokens);
-        tokens = linear(tokens, p + "mlp_fc2_weight", p + "mlp_fc2_bias");
+        tokens = linear(tokens, p + "mlp_fc2_weight", p + "mlp_fc2_bias", mlp_f16);
         return tokens ? ggml_add(ctx, tokens, shortcut) : nullptr;
     }
 

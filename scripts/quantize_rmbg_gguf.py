@@ -13,8 +13,9 @@ try:
 except ImportError as exc:
     raise SystemExit("pip install gguf") from exc
 
-def write_metadata(writer: gguf.GGUFWriter, fmt: str) -> None:
+def write_metadata(writer: gguf.GGUFWriter, fmt: str, model_id: str) -> None:
     writer.add_string("rmbg.backbone", "swin_v1_l")
+    writer.add_string("rmbg.model_id", model_id)
     writer.add_string("rmbg.weight_format", fmt)
     writer.add_uint32("rmbg.input_size", 1024)
     writer.add_array("rmbg.img.mean", [0.485, 0.456, 0.406])
@@ -27,11 +28,13 @@ def main() -> None:
                         help="runtime-named encoder and optional decoder GGUF files")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--format", choices=("f32", "f16"), required=True)
+    parser.add_argument("--model-id", default="ZhengPeng7/BiRefNet",
+                        help="source model identity stored in GGUF metadata")
     args = parser.parse_args()
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     writer = gguf.GGUFWriter(str(args.out), "rmbg")
-    write_metadata(writer, args.format)
+    write_metadata(writer, args.format, args.model_id)
     names: set[str] = set()
 
     for input_path in args.input:

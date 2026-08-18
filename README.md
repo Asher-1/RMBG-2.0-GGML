@@ -38,7 +38,7 @@ Join our [Discord community](https://discord.gg/Nxe9YW9zHS) for more information
 
 
 
-![examples](t4.png)
+![examples](docs/images/t4.png)
 
 ## Model Details
 #####
@@ -94,7 +94,7 @@ For clarity, we provide our data distribution according to different categories,
 ## Qualitative Evaluation
 Open source models comparison
 ![diagram](diagram1.png)
-![examples](collage5.png)
+![examples](docs/images/collage5.png)
 
 ### Architecture
 RMBG-2.0 is developed on the [BiRefNet](https://github.com/ZhengPeng7/BiRefNet) architecture enhanced with our proprietary dataset and training scheme. This training data significantly improves the model’s accuracy and effectiveness for background-removal task.<br>
@@ -164,32 +164,52 @@ RMBG-2.0 graph: two-scale Swin-L encoder, context/squeeze modules, decoder, defo
 ASPP, and sigmoid alpha output. Weights and intermediates remain on the selected
 backend; only the input and final alpha cross the host/device boundary.
 
-The CUDA path has a dedicated Swin-L `head_dim=32` attention node. It combines
-shifted-window pack/unpack, QKV projection and split, relative-position bias, shifted
-masking, softmax, output projection, and token-order restoration. Vulkan executes the
-same end-to-end graph through validated GGML primitives plus exact F32 custom gathers
-for input patch extraction and Swin patch merge. Attention and deformable sampling
-remain primitive Vulkan graphs, so strict Vulkan does not yet match PyTorch CUDA latency.
+The CUDA path includes dedicated Swin-L and deformable-im2col nodes, optional cuDNN
+convolution, and cached cuDNN descriptors/algorithm selection. Vulkan includes exact
+F32 gather/layout shaders, fused channel-affine operations, direct convolution with
+scalar accumulation, and a per-node CM1 whitelist; attention and deformable sampling
+retain strict primitive fallbacks where the fast path fails the fixture gate.
 
-RTX 3060 12 GiB, batch 1, 1024x1024 model input, warm steady state:
+Current measured matrix: RTX 3060 12 GiB, batch 1, 1024x1024, PyTorch 2.6.0+cu118,
+seven timed GPU iterations after two warmups. The report records raw samples, median, and
+P95. `strict` is compared with PyTorch strict; `optimized` is compared with PyTorch's
+matching non-strict mode; `unsafe-fast` is diagnostic only.
 
-| Runtime | Mean latency | max alpha abs diff | Result |
-|---|---:|---:|---|
-| PyTorch CUDA FP32 | 705.45 ms | reference | baseline |
-| GGML CUDA fast | **592.29 ms** | 1.315e-3 | **1.19x faster** |
-| GGML CUDA strict FP32 | 763.56 ms | 1.122e-4 | strict parity |
-| GGML Vulkan FP32 | 1293.35 ms | 1.081e-4 | portable fallback |
+| Runtime / model | Median | P95 | max fixture diff | Versus matching PyTorch mode | Result |
+|---|---:|---:|---:|---:|---|
+| PyTorch CUDA strict FP32 | 722.23 ms | 726.66 ms | reference | 1.000x | baseline |
+| PyTorch CUDA optimized FP32 | 559.96 ms | 564.92 ms | reference | 1.000x | baseline |
+| GGML CUDA F32 optimized | 573.12 ms | 575.18 ms | 1.430e-3 | 0.977x | pass |
+| GGML CUDA F16 optimized | **570.17 ms** | 573.26 ms | 1.430e-3 | 0.982x | pass |
+| GGML CUDA F32 strict | 745.90 ms | 750.30 ms | 1.131e-4 | 0.968x | pass |
+| GGML CUDA F16 strict | 748.71 ms | 754.54 ms | 1.131e-4 | 0.965x | pass |
+| GGML Vulkan F32 optimized | 682.32 ms | 684.41 ms | 1.533e-3 | 0.821x | pass, 1.058x vs PyTorch strict |
+| GGML Vulkan F16 optimized | **675.88 ms** | 692.86 ms | 1.533e-3 | 0.828x | pass, 1.069x vs PyTorch strict |
+| GGML Vulkan F32 strict | 1259.02 ms | 1267.05 ms | 1.099e-4 | 0.574x | pass, diagnostic baseline |
+| GGML Vulkan F16 strict | 1256.48 ms | 1259.14 ms | 1.099e-4 | 0.575x | pass, diagnostic baseline |
+| GGML CPU F16 strict, 16 threads | 15201.65 ms | 15281.42 ms | 1.052e-4 | 0.048x | pass |
 
-CUDA fast mode is the default: it selects TF32 Tensor Core GEMMs while retaining FP32
-accumulation. No alpha pixels exceed `2e-3` absolute error in the parity fixture. Set
-`RMBG_STRICT_MATH=1` when strict FP32 GEMM reproducibility is more important than
-throughput. The current comparison uses PyTorch 2.7.1+cu118 with TF32 disabled and 12
-warm steady-state iterations. Benchmark metadata is in
+CUDA and Vulkan optimized modes are the production defaults and pass the repository's
+`2e-3` fixture gate. Strict is a slower arithmetic/reference profile for parity and
+regression diagnosis, not a quality mode; use it only with `RMBG_STRICT_MATH=1` or
+`RMBG_VULKAN_MODE=strict` when validating numerical changes. Vulkan optimized uses
+direct scalar convolution and CM1 only for the four encoder stages and validated decoder
+projections. `RMBG_VULKAN_MODE=unsafe-fast` (or legacy `RMBG_VULKAN_FAST=1`) is a
+parity-failing experiment. The benchmark uses the open
+`ZhengPeng7/BiRefNet` weights used by the checked fixtures; the exact model/input hashes,
+raw samples, p95, environment, and per-case pass/fail state are in
 [`docs/rmbg_benchmark.json`](docs/rmbg_benchmark.json).
 
 ![PyTorch, GGML CUDA, and GGML Vulkan inference comparison](docs/rmbg_inference_comparison.png)
 
-![Mean end-to-end inference latency](docs/rmbg_latency_comparison.png)
+![All measured backend and model outputs](docs/rmbg_all_outputs_comparison.png)
+
+![Median end-to-end inference latency with P95 error bars](docs/rmbg_latency_comparison.png)
+
+The comparison figure's PASS/FAIL label uses the raw 1024x1024 float fixture gate. Its
+heatmap compares final original-size 8-bit PNG alpha channels, so isolated edge pixels
+can have a much larger maximum after resize and quantization; the mean remains the useful
+visual-output summary.
 
 Build and run CUDA:
 
@@ -204,10 +224,17 @@ cmake --build build-cuda -j
 Reproduce a benchmark and regenerate the figures:
 
 ```bash
-python scripts/benchmark_full.py --input t4.png --gguf models/rmbg_f16.gguf \
-  --backend cuda --build-dir build-cuda --pytorch-device cuda --math fast --runs 5
+python scripts/benchmark_full.py --input docs/images/t4.png \
+  --pytorch-model ZhengPeng7/BiRefNet --math-modes strict optimized \
+  --runs 7 --warmup 2 \
+  --cpu-runs 2 --cpu-warmup 0 --cpu-threads 16 --local-files-only
 python scripts/plot_benchmarks.py
 ```
+
+By default the runner detects `rmbg_f32.gguf`, `rmbg_f16.gguf`, and
+`rmbg_q8.gguf`, then measures the production `optimized` GPU mode plus the CPU
+reference. Pass `--math-modes strict optimized` for the complete diagnostic matrix;
+use repeated `--model NAME=PATH` arguments to benchmark a different model set.
 
 See [`docs/PORTING.md`](docs/PORTING.md) for graph ownership, backend fallbacks,
 strict-math flags, and parity details.
@@ -216,32 +243,55 @@ models, compatibility split weights, and unit-test subsets.
 The local Vulkan investigation and the resulting operator plan are in
 [`docs/VULKAN_RESEARCH.md`](docs/VULKAN_RESEARCH.md).
 
-### GGUF Precision Variants
+### GGUF assets
 
 The `models/` directory contains complete, runtime-named GGUF files for the full graph:
 
-| Model | Size | CUDA strict mean | Vulkan strict mean | max alpha abs diff |
-|---|---:|---:|---:|---:|
-| `rmbg_f32.gguf` | 841.9 MiB | 644.53 ms | 1293.35 ms | 1.122e-4 |
-| `rmbg_f16.gguf` | 421.0 MiB | 655.18 ms | 1278.46 ms | 1.122e-4 |
+| Model | Size | Status |
+|---|---:|---|
+| `rmbg_f32.gguf` | 841.9 MiB | Numerical reference and diagnostic model |
+| `rmbg_f16.gguf` | 421.0 MiB | Production default |
+| `rmbg_q8.gguf` | 247.0 MiB | Experimental benchmark artifact; parity failure |
 
-Both entries are batch 1, 1024x1024, five warm steady-state iterations on RTX 3060.
-F16 is the deployment default. Q8 has been removed from the RMBG release: its only
-parity-safe hybrid version saved 16.9 MiB relative to F16 but measured 648.72 ms CUDA /
-1278.50 ms Vulkan, so it was not faster on either backend. Full Q8 quantization also
-exceeded the `2e-3` alpha gate.
+Q8 is measured for completeness but is not a supported deployment format: every
+backend exceeds the `2e-3` alpha gate. Exact latency and error values remain in the
+single performance table above and in `docs/rmbg_benchmark.json`.
 
 Regenerate the variants from the validated split weights:
 
 ```bash
 python scripts/quantize_rmbg_gguf.py \
   --input models/development/encoder_f16.gguf models/development/decoder_alpha_f16.gguf \
-  --out models/rmbg_f32.gguf --format f32
+  --out models/rmbg_f32.gguf --format f32 --model-id ZhengPeng7/BiRefNet
 python scripts/quantize_rmbg_gguf.py \
   --input models/development/encoder_f16.gguf models/development/decoder_alpha_f16.gguf \
-  --out models/rmbg_f16.gguf --format f16
+  --out models/rmbg_f16.gguf --format f16 --model-id ZhengPeng7/BiRefNet
 ```
 
-Vulkan defaults to strict FP32 math. Set `RMBG_VULKAN_FAST=1` only when a measured
-`~5e-3` alpha difference is acceptable; on this RTX 3060 it reduces F32 latency to about
-887 ms, but does not meet the repository's strict `2e-3` gate.
+### Patched ggml integration
+
+All repository-specific ggml changes live in `third_party/ggml-rmbg.patch`. CMake reads
+the pinned submodule commit and patch SHA-256, exports that commit into a content-addressed
+build-tree source directory, applies and reverse-verifies the patch, and only then calls
+`add_subdirectory`. Editing the patch is a configure dependency, so developers never
+need to modify or manually patch the submodule.
+
+```bash
+git submodule update --init --recursive third_party/ggml
+cmake -S . -B build-cuda -DRMBG_GGML_CUDA=ON
+```
+
+The built ggml version contains both identities, for example
+`06ca97616793+rmbg.1e707fee4c86`. A patch that does not apply to the pinned commit makes
+configuration fail instead of silently building unpatched ggml.
+
+### Repository-local Git identity
+
+Configure this clone without changing global Git settings:
+
+```bash
+git config --local user.name ludahai
+git config --local user.email ludahai19@163.com
+git config --local --get user.name
+git config --local --get user.email
+```

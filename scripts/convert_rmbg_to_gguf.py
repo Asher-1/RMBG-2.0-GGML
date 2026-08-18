@@ -82,6 +82,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="briaai/RMBG-2.0")
     ap.add_argument("--safetensors", default="")
+    ap.add_argument("--model-id", default="",
+                    help="source model identity stored in GGUF metadata")
     ap.add_argument("--out", required=True)
     ap.add_argument("--ftype", type=int, default=1, help="0=f32 1=f16")
     args = ap.parse_args()
@@ -92,6 +94,10 @@ def main():
 
     writer = gguf.GGUFWriter(args.out, ARCH)
     writer.add_string("rmbg.backbone", "swin_v1_l")
+    writer.add_string(
+        "rmbg.model_id", args.model_id or
+        (args.safetensors if args.safetensors else args.model),
+    )
     writer.add_uint32("rmbg.input_size", 1024)
     writer.add_array("rmbg.img.mean", [0.485, 0.456, 0.406])
     writer.add_array("rmbg.img.std", [0.229, 0.224, 0.225])

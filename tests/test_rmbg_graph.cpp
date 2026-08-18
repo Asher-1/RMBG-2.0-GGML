@@ -1,12 +1,16 @@
 #include "parity.hpp"
+#include "rmbg.hpp"
 #include "rmbg_graph.hpp"
+#include "ggml-cpu.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
 static std::string env_or(const char * key, const char * fallback) {
@@ -40,8 +44,26 @@ int main() {
     }
     const enum ggml_backend_dev_type type = device == "cpu"
         ? GGML_BACKEND_DEVICE_TYPE_CPU : GGML_BACKEND_DEVICE_TYPE_GPU;
+    rmbg::configure_backend_profile(device.c_str());
     ggml_backend_t backend = ggml_backend_init_by_type(type, nullptr);
     if (!backend) { std::fprintf(stderr, "backend unavailable\n"); return 2; }
+    std::string backend_name = ggml_backend_name(backend);
+    std::transform(backend_name.begin(), backend_name.end(), backend_name.begin(),
+                   [](unsigned char c) { return (char) std::tolower(c); });
+    if (device != "gpu" && backend_name.find(device) == std::string::npos) {
+        std::fprintf(stderr, "requested backend '%s', initialized '%s'\n",
+                     device.c_str(), ggml_backend_name(backend));
+        ggml_backend_free(backend);
+        return 2;
+    }
+    std::fprintf(stderr, "backend: %s\n", ggml_backend_name(backend));
+    if (device == "cpu") {
+        const int fallback_threads = std::max(1u, std::thread::hardware_concurrency());
+        const int threads = std::max(1, std::atoi(
+            env_or("RMBG_CPU_THREADS", std::to_string(fallback_threads).c_str()).c_str()));
+        ggml_backend_cpu_set_n_threads(backend, threads);
+        std::fprintf(stderr, "cpu threads: %d\n", threads);
+    }
 
     bool ok = false;
     {
@@ -83,7 +105,16 @@ int main() {
         ok = rmbg_parity::compare(got, ref, "graph_alpha", 2e-3f, 2e-3f);
         const int iterations = std::max(0, std::atoi(env_or("RMBG_BENCH_ITERS", "0").c_str()));
         if (iterations > 0) {
+            const int warmup = std::max(0, std::atoi(env_or("RMBG_BENCH_WARMUP", "2").c_str()));
+            for (int i = 0; i < warmup; ++i) {
+                if (!graph.forward(input, got, err)) {
+                    std::fprintf(stderr, "benchmark warmup: %s\n", err.c_str());
+                    return 1;
+                }
+            }
             double total_ms = 0.0, best_ms = 1e100;
+            std::vector<double> samples;
+            samples.reserve(iterations);
             for (int i = 0; i < iterations; ++i) {
                 const auto begin = std::chrono::steady_clock::now();
                 if (!graph.forward(input, got, err)) {
@@ -94,9 +125,14 @@ int main() {
                     std::chrono::steady_clock::now() - begin).count();
                 total_ms += ms;
                 best_ms = std::min(best_ms, ms);
+                samples.push_back(ms);
             }
-            std::fprintf(stderr, "steady-state: iterations=%d mean=%.2f ms best=%.2f ms\n",
-                         iterations, total_ms / iterations, best_ms);
+            std::fprintf(stderr,
+                         "steady-state: warmup=%d iterations=%d mean=%.2f ms best=%.2f ms\n",
+                         warmup, iterations, total_ms / iterations, best_ms);
+            std::fprintf(stderr, "samples-ms:");
+            for (const double sample : samples) std::fprintf(stderr, " %.6f", sample);
+            std::fputc('\n', stderr);
         }
     }
     ggml_backend_free(backend);

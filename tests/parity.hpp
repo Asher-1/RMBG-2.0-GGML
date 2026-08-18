@@ -34,22 +34,27 @@ inline bool compare(const std::vector<float> & got, const std::vector<float> & r
         return false;
     }
     if (got.empty()) return false;
-    double maxabs = 0.0, sumabs = 0.0;
-    size_t worst = 0;
+    double maxabs = 0.0, sumabs = 0.0, max_ratio = 0.0;
+    size_t worst = 0, worst_ratio = 0, failures = 0;
     for (size_t i = 0; i < got.size(); ++i) {
         double d = std::fabs((double) got[i] - (double) ref[i]);
         sumabs += d;
         if (d > maxabs) { maxabs = d; worst = i; }
-    }
-    bool ok = true;
-    for (size_t i = 0; i < got.size() && ok; ++i) {
         double tol = (double) atol + (double) rtol * std::fabs((double) ref[i]);
-        if (std::fabs((double) got[i] - (double) ref[i]) > tol) ok = false;
+        const double ratio = d / tol;
+        if (!std::isfinite(d) || ratio > 1.0) ++failures;
+        if (!std::isfinite(ratio) || ratio > max_ratio) {
+            max_ratio = ratio;
+            worst_ratio = i;
+        }
     }
+    const bool ok = failures == 0;
     std::fprintf(stderr,
-        "[%s] n=%zu max|d|=%.3e mean|d|=%.3e (worst@%zu got=%.5f ref=%.5f) -> %s\n",
-        label, got.size(), maxabs, sumabs / got.size(), worst,
-        got[worst], ref[worst], ok ? "OK" : "FAIL");
+        "[%s] n=%zu max|d|=%.3e mean|d|=%.3e failures=%zu "
+        "(maxabs@%zu got=%.5f ref=%.5f; maxratio=%.3f@%zu got=%.5f ref=%.5f) -> %s\n",
+        label, got.size(), maxabs, sumabs / got.size(), failures,
+        worst, got[worst], ref[worst], max_ratio, worst_ratio,
+        got[worst_ratio], ref[worst_ratio], ok ? "OK" : "FAIL");
     return ok;
 }
 

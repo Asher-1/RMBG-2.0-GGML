@@ -69,8 +69,14 @@ if(RMBG_GGML_CUDA)
         ENVIRONMENT "RMBG_ROOT=${RMBG_ROOT};RMBG_DEVICE=gpu;NVIDIA_TF32_OVERRIDE=0"
         TIMEOUT 180)
 elseif(RMBG_GGML_VULKAN)
-    set_tests_properties(swin_graph_full rmbg_graph PROPERTIES
-        ENVIRONMENT "RMBG_ROOT=${RMBG_ROOT};RMBG_DEVICE=gpu;GGML_VK_DISABLE_F16=1;GGML_VK_DISABLE_COOPMAT=1;GGML_VK_DISABLE_COOPMAT2=1;GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1"
+    # Intermediate Swin fixtures use tight layer-local thresholds, so retain
+    # the scalar diagnostic profile there. The end-to-end alpha fixture is the
+    # acceptance gate for the production optimized profile.
+    set_tests_properties(swin_graph_full PROPERTIES
+        ENVIRONMENT "RMBG_ROOT=${RMBG_ROOT};RMBG_DEVICE=gpu;RMBG_VULKAN_MODE=strict;GGML_VK_DISABLE_F16=1;GGML_VK_DISABLE_COOPMAT=1;GGML_VK_DISABLE_COOPMAT2=1;GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1"
+        TIMEOUT 180)
+    set_tests_properties(rmbg_graph PROPERTIES
+        ENVIRONMENT "RMBG_ROOT=${RMBG_ROOT};RMBG_DEVICE=gpu"
         TIMEOUT 180)
 else()
     set_tests_properties(swin_graph_full rmbg_graph PROPERTIES

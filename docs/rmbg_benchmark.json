@@ -1,31 +1,951 @@
 {
-  "date": "2026-08-04",
-  "model": "RMBG-2.0 unified F16 GGUF",
-  "input_size": "1024x1024",
-  "hardware": "NVIDIA GeForce RTX 3060 12 GiB, CUDA 11.8, Vulkan",
-  "images": {
-    "input": "t4.png",
-    "pytorch": "docs/benchmark_assets/pytorch.png",
-    "cuda": "docs/benchmark_assets/ggml-cuda.png",
-    "vulkan": "docs/benchmark_assets/ggml-vulkan.png"
+  "schema_version": 2,
+  "generated_at": "2026-08-18T12:43:34.759157+08:00",
+  "source": {
+    "repository_commit": "12d70600591f0f4a39261aa1612f6098636cc34d",
+    "working_tree_dirty": true,
+    "ggml_commit": "06ca97616793248fadb410ea8d69c7511b2005e4",
+    "ggml_patch_sha256": "1e707fee4c867a4ab6602f1cd6858249803c96949cf7950496484d8b39cbe67b"
   },
-  "latency_ms": {
-    "pytorch_cpu": {"label": "PyTorch CPU", "mean": 13662.23, "color": "#9e9e9e", "chart": false},
-    "pytorch_cuda": {"label": "PyTorch CUDA", "mean": 705.45, "color": "#f58518"},
-    "ggml_cuda_fast": {"label": "GGML CUDA fast", "mean": 592.29, "color": "#54a24b"},
-    "ggml_cuda_strict": {"label": "GGML CUDA strict", "mean": 763.56, "color": "#2f6f3e"},
-    "ggml_vulkan": {"label": "GGML Vulkan", "mean": 1293.35, "color": "#4c78a8"}
+  "hardware": {
+    "platform": "Linux-5.15.0-139-generic-x86_64-with-glibc2.31",
+    "processor": "x86_64",
+    "cpu": "AMD Ryzen 9 5950X 16-Core Processor",
+    "nvidia_smi": "NVIDIA GeForce RTX 3060, 550.144.03, 12288 MiB"
   },
-  "precision": {
-    "cuda_fast_max_abs_alpha_diff": 0.001315,
-    "cuda_fast_pixels_over_0_002": 0,
-    "cuda_strict_max_abs_alpha_diff": 0.0001122,
-    "vulkan_max_abs_alpha_diff": 0.0001081
+  "software": {
+    "python": "3.11.14",
+    "pytorch": "2.6.0+cu118",
+    "cuda_runtime": "11.8",
+    "cmake": "cmake version 3.23.0"
   },
-  "notes": [
-    "GGML strict and Vulkan timings use NVIDIA_TF32_OVERRIDE=0 or Vulkan FP32-disable flags.",
-    "PyTorch CUDA uses PyTorch 2.7.1+cu118 with TF32 disabled; each current CUDA timing uses 12 warm steady-state iterations.",
-    "GGML CUDA fast uses TF32 Tensor Cores; strict and Vulkan retain FP32 arithmetic. Vulkan timing remains the validated portable fallback measurement.",
-    "PyTorch and GGML output images are generated from the same t4.png input."
+  "configuration": {
+    "input": "docs/images/t4.png",
+    "input_sha256": "43a9453f567d9bff7fe4481205575bbf302499379047ee6073247315452ba8fb",
+    "input_size": "1024x1024",
+    "runs": 12,
+    "warmup": 2,
+    "cpu_runs": 2,
+    "cpu_warmup": 0,
+    "cpu_threads": 16,
+    "parity_limit": 0.002,
+    "pytorch_model": "ZhengPeng7/BiRefNet"
+  },
+  "models": {
+    "f32": {
+      "path": "models/rmbg_f32.gguf",
+      "bytes": 882846304,
+      "sha256": "73fa93582743128e392b6e5b6be821e5b67361dcd5a5c0deca0ae4077e4c0ddd"
+    },
+    "f16": {
+      "path": "models/rmbg_f16.gguf",
+      "bytes": 441451648,
+      "sha256": "50aaf0c7570df97b3767909394d9a63c93effe9f01dc863b17fa69d5f76eb8e3"
+    },
+    "q8": {
+      "path": "models/rmbg_q8.gguf",
+      "bytes": 258974848,
+      "sha256": "a2f432614d91057614c59745d40a1770b1a84455f5f853174629b05fc7c8e079"
+    }
+  },
+  "cases": [
+    {
+      "id": "pytorch-cuda-strict",
+      "runtime": "pytorch",
+      "backend": "cuda",
+      "backend_name": "cuda",
+      "math_mode": "strict",
+      "model": "fp32",
+      "measurement_context": {
+        "load_average": [
+          2.78,
+          4.95,
+          5.67
+        ],
+        "gpu_utilization": "37 %, 2330 MiB, 1807 MHz, P2"
+      },
+      "samples_ms": [
+        676.8129629999748,
+        696.2896149998414,
+        708.0521600000793,
+        699.3647689960198,
+        700.7399029971566,
+        699.5129950009868,
+        700.1203439940582,
+        698.572608998802,
+        699.8396100025275,
+        703.9821309954277,
+        677.9890670004534,
+        680.7145810016664
+      ],
+      "mean_ms": 695.1658955822495,
+      "median_ms": 699.4388819985033,
+      "p95_ms": 705.8136440475209,
+      "min_ms": 676.8129629999748,
+      "stddev_ms": 10.047188090265108,
+      "output_image": "benchmark_results_current/pytorch-cuda-strict.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.0,
+        "mean_abs_diff": 0.0
+      }
+    },
+    {
+      "id": "pytorch-cuda-optimized",
+      "runtime": "pytorch",
+      "backend": "cuda",
+      "backend_name": "cuda",
+      "math_mode": "optimized",
+      "model": "fp32",
+      "measurement_context": {
+        "load_average": [
+          2.97,
+          4.92,
+          5.65
+        ],
+        "gpu_utilization": "18 %, 2414 MiB, 1965 MHz, P2"
+      },
+      "samples_ms": [
+        547.0228999984101,
+        545.6671529973391,
+        544.8639339956571,
+        545.66803999478,
+        546.6885390051175,
+        549.401789001422,
+        536.1396499938564,
+        534.4172139957664,
+        513.841334002791,
+        548.554676999629,
+        548.1031489980523,
+        548.0831430031685
+      ],
+      "mean_ms": 542.3709601654991,
+      "median_ms": 546.1782894999487,
+      "p95_ms": 548.9358774004359,
+      "min_ms": 513.841334002791,
+      "stddev_ms": 9.735764717045075,
+      "output_image": "benchmark_results_current/pytorch-cuda-optimized.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 16.0,
+        "mean_abs_diff": 0.01281905360519886
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.062745101749897,
+        "mean_abs_diff": 5.0270798965357244e-05
+      }
+    },
+    {
+      "id": "ggml-cpu-f32-strict",
+      "runtime": "ggml",
+      "backend": "cpu",
+      "backend_name": "CPU",
+      "math_mode": "strict",
+      "model": "f32",
+      "build_dir": "build",
+      "measurement_context": {
+        "load_average": [
+          3.2,
+          4.9,
+          5.64
+        ],
+        "gpu_utilization": "54 %, 1542 MiB, 1950 MHz, P2"
+      },
+      "samples_ms": [
+        14244.323667,
+        14091.679367
+      ],
+      "mean_ms": 14168.001517,
+      "median_ms": 14168.001517,
+      "p95_ms": 14236.691452000001,
+      "min_ms": 14091.679367,
+      "stddev_ms": 76.32214999999997,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": true,
+        "max_abs_diff": 0.0001052,
+        "mean_abs_diff": 1.104e-07
+      },
+      "cold_cli_ms": 28730.418576000375,
+      "output_image": "benchmark_results_current/ggml-cpu-f32-strict.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 241.0,
+        "mean_abs_diff": 0.47151634097099304
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9450980424880981,
+        "mean_abs_diff": 0.0018490836955606937
+      },
+      "speedup_vs_pytorch_cuda_strict": 0.04906591058365776,
+      "speedup_median_vs_pytorch_cuda_strict": 0.0493675047365894,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.04906591058365776,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.0493675047365894
+    },
+    {
+      "id": "ggml-cpu-f16-strict",
+      "runtime": "ggml",
+      "backend": "cpu",
+      "backend_name": "CPU",
+      "math_mode": "strict",
+      "model": "f16",
+      "build_dir": "build",
+      "measurement_context": {
+        "load_average": [
+          11.07,
+          7.29,
+          6.44
+        ],
+        "gpu_utilization": "24 %, 1556 MiB, 652 MHz, P3"
+      },
+      "samples_ms": [
+        13957.657837,
+        14080.743875
+      ],
+      "mean_ms": 14019.200856,
+      "median_ms": 14019.200856,
+      "p95_ms": 14074.5895731,
+      "min_ms": 13957.657837,
+      "stddev_ms": 61.54301899999973,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": true,
+        "max_abs_diff": 0.0001052,
+        "mean_abs_diff": 1.104e-07
+      },
+      "cold_cli_ms": 29235.565602997667,
+      "output_image": "benchmark_results_current/ggml-cpu-f16-strict.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 241.0,
+        "mean_abs_diff": 0.47151634097099304
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9450980424880981,
+        "mean_abs_diff": 0.0018490836955606937
+      },
+      "speedup_vs_pytorch_cuda_strict": 0.04958669917941359,
+      "speedup_median_vs_pytorch_cuda_strict": 0.04989149447125257,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.04958669917941359,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.04989149447125257
+    },
+    {
+      "id": "ggml-cpu-q8-strict",
+      "runtime": "ggml",
+      "backend": "cpu",
+      "backend_name": "CPU",
+      "math_mode": "strict",
+      "model": "q8",
+      "build_dir": "build",
+      "measurement_context": {
+        "load_average": [
+          11.39,
+          8.61,
+          6.99
+        ],
+        "gpu_utilization": "24 %, 1509 MiB, 735 MHz, P3"
+      },
+      "samples_ms": [
+        14138.770892,
+        14118.805502
+      ],
+      "mean_ms": 14128.788197,
+      "median_ms": 14128.788197,
+      "p95_ms": 14137.7726225,
+      "min_ms": 14118.805502,
+      "stddev_ms": 9.982695000000604,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": false,
+        "max_abs_diff": 0.03173,
+        "mean_abs_diff": 1.703e-05
+      },
+      "cold_cli_ms": 28878.211365001334,
+      "output_image": "benchmark_results_current/ggml-cpu-q8-strict.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 233.0,
+        "mean_abs_diff": 0.6767078638076782
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9137254953384399,
+        "mean_abs_diff": 0.0026537564117461443
+      },
+      "speedup_vs_pytorch_cuda_strict": 0.04920208908856428,
+      "speedup_median_vs_pytorch_cuda_strict": 0.0495045202919113,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.04920208908856428,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.0495045202919113
+    },
+    {
+      "id": "ggml-cuda-f32-strict",
+      "runtime": "ggml",
+      "backend": "cuda",
+      "backend_name": "CUDA0",
+      "math_mode": "strict",
+      "model": "f32",
+      "build_dir": "build-cuda",
+      "measurement_context": {
+        "load_average": [
+          11.39,
+          9.49,
+          7.45
+        ],
+        "gpu_utilization": "20 %, 1470 MiB, 907 MHz, P3"
+      },
+      "samples_ms": [
+        723.928561,
+        685.662344,
+        687.203468,
+        702.313384,
+        712.830773,
+        730.43898,
+        732.582671,
+        729.593284,
+        729.184905,
+        729.778759,
+        731.549923,
+        731.538084
+      ],
+      "mean_ms": 718.8837613333334,
+      "median_ms": 729.3890945,
+      "p95_ms": 732.0146596000001,
+      "min_ms": 685.662344,
+      "stddev_ms": 16.8948334816814,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": true,
+        "max_abs_diff": 0.0001131,
+        "mean_abs_diff": 1.383e-07
+      },
+      "cold_cli_ms": 5425.9123189985985,
+      "output_image": "benchmark_results_current/ggml-cuda-f32-strict.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 241.0,
+        "mean_abs_diff": 0.4715312123298645
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9450980424880981,
+        "mean_abs_diff": 0.001849142019636929
+      },
+      "speedup_vs_pytorch_cuda_strict": 0.9670073702776458,
+      "speedup_median_vs_pytorch_cuda_strict": 0.9589379485828099,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.9670073702776458,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.9589379485828099
+    },
+    {
+      "id": "ggml-cuda-f32-optimized",
+      "runtime": "ggml",
+      "backend": "cuda",
+      "backend_name": "CUDA0",
+      "math_mode": "optimized",
+      "model": "f32",
+      "build_dir": "build-cuda",
+      "measurement_context": {
+        "load_average": [
+          9.46,
+          9.17,
+          7.39
+        ],
+        "gpu_utilization": "13 %, 1403 MiB, 1950 MHz, P2"
+      },
+      "samples_ms": [
+        557.113584,
+        555.213293,
+        555.409931,
+        557.852311,
+        556.395218,
+        559.799185,
+        558.756657,
+        558.756098,
+        534.24735,
+        543.805914,
+        549.995662,
+        560.425837
+      ],
+      "mean_ms": 553.98092,
+      "median_ms": 556.7544009999999,
+      "p95_ms": 560.0811784,
+      "min_ms": 534.24735,
+      "stddev_ms": 7.438732348532784,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": true,
+        "max_abs_diff": 0.00143,
+        "mean_abs_diff": 1.039e-06
+      },
+      "cold_cli_ms": 4922.988029997214,
+      "output_image": "benchmark_results_current/ggml-cuda-f32-optimized.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 241.0,
+        "mean_abs_diff": 0.4580668807029724
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9450980424880981,
+        "mean_abs_diff": 0.0017963406862691045
+      },
+      "speedup_vs_pytorch_cuda_strict": 1.2548553036488144,
+      "speedup_median_vs_pytorch_cuda_strict": 1.2562790356793307,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.9790426720210854,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.9810039912014074
+    },
+    {
+      "id": "ggml-cuda-f16-strict",
+      "runtime": "ggml",
+      "backend": "cuda",
+      "backend_name": "CUDA0",
+      "math_mode": "strict",
+      "model": "f16",
+      "build_dir": "build-cuda",
+      "measurement_context": {
+        "load_average": [
+          8.11,
+          8.89,
+          7.32
+        ],
+        "gpu_utilization": "11 %, 1423 MiB, 1950 MHz, P2"
+      },
+      "samples_ms": [
+        738.877086,
+        741.561819,
+        732.702506,
+        706.182985,
+        721.875294,
+        740.134993,
+        734.198506,
+        740.715986,
+        739.784297,
+        732.673131,
+        734.444077,
+        738.074168
+      ],
+      "mean_ms": 733.435404,
+      "median_ms": 736.2591225,
+      "p95_ms": 741.09661085,
+      "min_ms": 706.182985,
+      "stddev_ms": 9.72289777875773,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": true,
+        "max_abs_diff": 0.0001131,
+        "mean_abs_diff": 1.383e-07
+      },
+      "cold_cli_ms": 5425.507153995568,
+      "output_image": "benchmark_results_current/ggml-cuda-f16-strict.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 241.0,
+        "mean_abs_diff": 0.4715312123298645
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9450980424880981,
+        "mean_abs_diff": 0.001849142019636929
+      },
+      "speedup_vs_pytorch_cuda_strict": 0.9478215692765352,
+      "speedup_median_vs_pytorch_cuda_strict": 0.9499901062326102,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.9478215692765352,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.9499901062326102
+    },
+    {
+      "id": "ggml-cuda-f16-optimized",
+      "runtime": "ggml",
+      "backend": "cuda",
+      "backend_name": "CUDA0",
+      "math_mode": "optimized",
+      "model": "f16",
+      "build_dir": "build-cuda",
+      "measurement_context": {
+        "load_average": [
+          6.84,
+          8.54,
+          7.24
+        ],
+        "gpu_utilization": "11 %, 1765 MiB, 1935 MHz, P2"
+      },
+      "samples_ms": [
+        561.893264,
+        569.097267,
+        558.977242,
+        566.834719,
+        559.498361,
+        562.708747,
+        560.411581,
+        565.468221,
+        560.369326,
+        541.755217,
+        533.400583,
+        562.473216
+      ],
+      "mean_ms": 558.5739786666667,
+      "median_ms": 561.1524225000001,
+      "p95_ms": 567.8528656,
+      "min_ms": 533.400583,
+      "stddev_ms": 9.975034558902914,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": true,
+        "max_abs_diff": 0.00143,
+        "mean_abs_diff": 1.039e-06
+      },
+      "cold_cli_ms": 5224.938914005179,
+      "output_image": "benchmark_results_current/ggml-cuda-f16-optimized.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 241.0,
+        "mean_abs_diff": 0.4580668807029724
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9450980424880981,
+        "mean_abs_diff": 0.0017963406862691045
+      },
+      "speedup_vs_pytorch_cuda_strict": 1.2445368422668595,
+      "speedup_median_vs_pytorch_cuda_strict": 1.2464329724933216,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.97099217092095,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.9733153909710667
+    },
+    {
+      "id": "ggml-cuda-q8-strict",
+      "runtime": "ggml",
+      "backend": "cuda",
+      "backend_name": "CUDA0",
+      "math_mode": "strict",
+      "model": "q8",
+      "build_dir": "build-cuda",
+      "measurement_context": {
+        "load_average": [
+          6.43,
+          8.33,
+          7.19
+        ],
+        "gpu_utilization": "10 %, 1856 MiB, 1935 MHz, P2"
+      },
+      "samples_ms": [
+        737.076703,
+        735.828701,
+        736.778692,
+        714.434876,
+        713.32957,
+        736.164592,
+        737.352095,
+        735.961517,
+        735.526767,
+        736.207613,
+        736.645033,
+        736.862593
+      ],
+      "mean_ms": 732.6807293333335,
+      "median_ms": 736.1861025000001,
+      "p95_ms": 737.2006293999999,
+      "min_ms": 713.32957,
+      "stddev_ms": 8.425512791452698,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": false,
+        "max_abs_diff": 0.0317,
+        "mean_abs_diff": 1.702e-05
+      },
+      "cold_cli_ms": 4924.816600003396,
+      "output_image": "benchmark_results_current/ggml-cuda-q8-strict.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 233.0,
+        "mean_abs_diff": 0.676734983921051
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9137254953384399,
+        "mean_abs_diff": 0.0026538625825196505
+      },
+      "speedup_vs_pytorch_cuda_strict": 0.9487978429769557,
+      "speedup_median_vs_pytorch_cuda_strict": 0.9500843327839149,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.9487978429769557,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.9500843327839149
+    },
+    {
+      "id": "ggml-cuda-q8-optimized",
+      "runtime": "ggml",
+      "backend": "cuda",
+      "backend_name": "CUDA0",
+      "math_mode": "optimized",
+      "model": "q8",
+      "build_dir": "build-cuda",
+      "measurement_context": {
+        "load_average": [
+          6.23,
+          8.16,
+          7.16
+        ],
+        "gpu_utilization": "11 %, 1408 MiB, 1935 MHz, P2"
+      },
+      "samples_ms": [
+        557.698957,
+        557.775112,
+        562.36629,
+        559.241146,
+        559.943752,
+        559.925198,
+        559.12814,
+        559.39552,
+        559.668164,
+        558.735811,
+        559.707801,
+        532.474476
+      ],
+      "mean_ms": 557.1716972500001,
+      "median_ms": 559.3183329999999,
+      "p95_ms": 561.0338941,
+      "min_ms": 532.474476,
+      "stddev_ms": 7.533320381840392,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": false,
+        "max_abs_diff": 0.03334,
+        "mean_abs_diff": 1.698e-05
+      },
+      "cold_cli_ms": 4672.901078003633,
+      "output_image": "benchmark_results_current/ggml-cuda-q8-optimized.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 233.0,
+        "mean_abs_diff": 0.6703355312347412
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9137254953384399,
+        "mean_abs_diff": 0.0026287666987627745
+      },
+      "speedup_vs_pytorch_cuda_strict": 1.2476690740275203,
+      "speedup_median_vs_pytorch_cuda_strict": 1.2505202149318846,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.9734359495330576,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.9765070395072296
+    },
+    {
+      "id": "ggml-vulkan-f32-strict",
+      "runtime": "ggml",
+      "backend": "vulkan",
+      "backend_name": "Vulkan0",
+      "math_mode": "strict",
+      "model": "f32",
+      "build_dir": "build-vulkan",
+      "measurement_context": {
+        "load_average": [
+          5.28,
+          7.85,
+          7.08
+        ],
+        "gpu_utilization": "11 %, 1411 MiB, 1935 MHz, P2"
+      },
+      "samples_ms": [
+        1167.905005,
+        1163.957508,
+        1191.000227,
+        1233.800049,
+        1272.786128,
+        1338.173031,
+        1171.237128,
+        1172.085962,
+        1502.028645,
+        1252.757033,
+        1192.909565,
+        1225.25274
+      ],
+      "mean_ms": 1240.3244184166667,
+      "median_ms": 1209.0811525,
+      "p95_ms": 1411.9080572999999,
+      "min_ms": 1163.957508,
+      "stddev_ms": 93.42045182844703,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": true,
+        "max_abs_diff": 0.0001099,
+        "mean_abs_diff": 1.378e-07
+      },
+      "cold_cli_ms": 7379.0932579941,
+      "output_image": "benchmark_results_current/ggml-vulkan-f32-strict.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 241.0,
+        "mean_abs_diff": 0.47148481011390686
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9450980424880981,
+        "mean_abs_diff": 0.0018489600624889135
+      },
+      "speedup_vs_pytorch_cuda_strict": 0.5604710229519322,
+      "speedup_median_vs_pytorch_cuda_strict": 0.5784879538915014,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.5604710229519322,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.5784879538915014
+    },
+    {
+      "id": "ggml-vulkan-f32-optimized",
+      "runtime": "ggml",
+      "backend": "vulkan",
+      "backend_name": "Vulkan0",
+      "math_mode": "optimized",
+      "model": "f32",
+      "build_dir": "build-vulkan",
+      "measurement_context": {
+        "load_average": [
+          4.08,
+          7.27,
+          6.91
+        ],
+        "gpu_utilization": "61 %, 1930 MiB, 1935 MHz, P2"
+      },
+      "samples_ms": [
+        643.461851,
+        627.631482,
+        640.614188,
+        694.114558,
+        974.624984,
+        641.863783,
+        645.875059,
+        643.595706,
+        642.840816,
+        657.019109,
+        697.720398,
+        1211.17945
+      ],
+      "mean_ms": 726.711782,
+      "median_ms": 644.7353825,
+      "p95_ms": 1081.0744937,
+      "min_ms": 627.631482,
+      "stddev_ms": 171.94152528092096,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": true,
+        "max_abs_diff": 0.001533,
+        "mean_abs_diff": 9.681e-07
+      },
+      "cold_cli_ms": 6577.231930998096,
+      "output_image": "benchmark_results_current/ggml-vulkan-f32-optimized.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 240.0,
+        "mean_abs_diff": 0.4635040760040283
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9411764740943909,
+        "mean_abs_diff": 0.0018176630837842822
+      },
+      "speedup_vs_pytorch_cuda_strict": 0.9565909247667179,
+      "speedup_median_vs_pytorch_cuda_strict": 1.0848464362020698,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.7463357187808731,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.8471355913213724
+    },
+    {
+      "id": "ggml-vulkan-f16-strict",
+      "runtime": "ggml",
+      "backend": "vulkan",
+      "backend_name": "Vulkan0",
+      "math_mode": "strict",
+      "model": "f16",
+      "build_dir": "build-vulkan",
+      "measurement_context": {
+        "load_average": [
+          3.69,
+          6.97,
+          6.82
+        ],
+        "gpu_utilization": "53 %, 2332 MiB, 1935 MHz, P2"
+      },
+      "samples_ms": [
+        1162.104716,
+        1199.525436,
+        1204.740388,
+        1187.460367,
+        1193.844497,
+        1198.391058,
+        1150.720425,
+        1182.895181,
+        1188.304816,
+        1185.349054,
+        1185.490234,
+        1188.600218
+      ],
+      "mean_ms": 1185.6188658333333,
+      "median_ms": 1187.8825915,
+      "p95_ms": 1201.8721644,
+      "min_ms": 1150.720425,
+      "stddev_ms": 14.684553502509536,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": true,
+        "max_abs_diff": 0.0001099,
+        "mean_abs_diff": 1.378e-07
+      },
+      "cold_cli_ms": 6226.1149149999255,
+      "output_image": "benchmark_results_current/ggml-vulkan-f16-strict.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 241.0,
+        "mean_abs_diff": 0.47148481011390686
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9450980424880981,
+        "mean_abs_diff": 0.0018489600624889135
+      },
+      "speedup_vs_pytorch_cuda_strict": 0.5863316750561656,
+      "speedup_median_vs_pytorch_cuda_strict": 0.5888114591487414,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.5863316750561656,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.5888114591487414
+    },
+    {
+      "id": "ggml-vulkan-f16-optimized",
+      "runtime": "ggml",
+      "backend": "vulkan",
+      "backend_name": "Vulkan0",
+      "math_mode": "optimized",
+      "model": "f16",
+      "build_dir": "build-vulkan",
+      "measurement_context": {
+        "load_average": [
+          4.97,
+          6.96,
+          6.82
+        ],
+        "gpu_utilization": "71 %, 1402 MiB, 1935 MHz, P2"
+      },
+      "samples_ms": [
+        636.34992,
+        641.031751,
+        641.170993,
+        641.788098,
+        636.666649,
+        611.397116,
+        616.529801,
+        634.787479,
+        634.787951,
+        636.90847,
+        636.828812,
+        635.108115
+      ],
+      "mean_ms": 633.6129295833333,
+      "median_ms": 636.5082845,
+      "p95_ms": 641.4486902499999,
+      "min_ms": 611.397116,
+      "stddev_ms": 9.162363660159421,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": true,
+        "max_abs_diff": 0.001533,
+        "mean_abs_diff": 9.681e-07
+      },
+      "cold_cli_ms": 6125.598945996899,
+      "output_image": "benchmark_results_current/ggml-vulkan-f16-optimized.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 240.0,
+        "mean_abs_diff": 0.4635040760040283
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9411764740943909,
+        "mean_abs_diff": 0.0018176630837842822
+      },
+      "speedup_vs_pytorch_cuda_strict": 1.0971460068521546,
+      "speedup_median_vs_pytorch_cuda_strict": 1.0988684657073045,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.8559973050457866,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.8580851228495656
+    },
+    {
+      "id": "ggml-vulkan-q8-strict",
+      "runtime": "ggml",
+      "backend": "vulkan",
+      "backend_name": "Vulkan0",
+      "math_mode": "strict",
+      "model": "q8",
+      "build_dir": "build-vulkan",
+      "measurement_context": {
+        "load_average": [
+          4.3,
+          6.67,
+          6.73
+        ],
+        "gpu_utilization": "23 %, 1431 MiB, 1935 MHz, P2"
+      },
+      "samples_ms": [
+        1197.543072,
+        1199.807063,
+        1200.257871,
+        1199.100944,
+        1152.086509,
+        1201.249274,
+        1196.612825,
+        1201.775007,
+        1200.532028,
+        1196.789232,
+        1175.046147,
+        1176.275241
+      ],
+      "mean_ms": 1191.4229344166667,
+      "median_ms": 1198.322008,
+      "p95_ms": 1201.48585385,
+      "min_ms": 1152.086509,
+      "stddev_ms": 14.81045192462192,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": false,
+        "max_abs_diff": 0.0317,
+        "mean_abs_diff": 1.702e-05
+      },
+      "cold_cli_ms": 5875.367847002053,
+      "output_image": "benchmark_results_current/ggml-vulkan-q8-strict.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 233.0,
+        "mean_abs_diff": 0.6766579747200012
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9137254953384399,
+        "mean_abs_diff": 0.0026535606011748314
+      },
+      "speedup_vs_pytorch_cuda_strict": 0.5834753348294491,
+      "speedup_median_vs_pytorch_cuda_strict": 0.5836819129825273,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.5834753348294491,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.5836819129825273
+    },
+    {
+      "id": "ggml-vulkan-q8-optimized",
+      "runtime": "ggml",
+      "backend": "vulkan",
+      "backend_name": "Vulkan0",
+      "math_mode": "optimized",
+      "model": "q8",
+      "build_dir": "build-vulkan",
+      "measurement_context": {
+        "load_average": [
+          3.37,
+          6.22,
+          6.58
+        ],
+        "gpu_utilization": "70 %, 1401 MiB, 1935 MHz, P2"
+      },
+      "samples_ms": [
+        624.7142,
+        628.162002,
+        603.887105,
+        612.610758,
+        621.79826,
+        624.987418,
+        626.616167,
+        629.014575,
+        625.277196,
+        627.041627,
+        625.153005,
+        625.667259
+      ],
+      "mean_ms": 622.9107976666667,
+      "median_ms": 625.2151005000001,
+      "p95_ms": 628.54565985,
+      "min_ms": 603.887105,
+      "stddev_ms": 7.015721769104347,
+      "fixture_parity": {
+        "limit": 0.002,
+        "passed": false,
+        "max_abs_diff": 0.03638,
+        "mean_abs_diff": 1.728e-05
+      },
+      "cold_cli_ms": 5524.490550000337,
+      "output_image": "benchmark_results_current/ggml-vulkan-q8-optimized.png",
+      "alpha_u8_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 233.0,
+        "mean_abs_diff": 0.6640122532844543
+      },
+      "alpha_normalized_vs_pytorch_cuda_strict": {
+        "max_abs_diff": 0.9137254953384399,
+        "mean_abs_diff": 0.0026039695367217064
+      },
+      "speedup_vs_pytorch_cuda_strict": 1.1159958989091856,
+      "speedup_median_vs_pytorch_cuda_strict": 1.1187171925936286,
+      "speedup_vs_pytorch_cuda_matching_mode": 0.8707040593888273,
+      "speedup_median_vs_pytorch_cuda_matching_mode": 0.8735846096218027
+    }
   ]
 }

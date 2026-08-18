@@ -1,141 +1,293 @@
-# RMBG-2.0 GGML implementation status
+# RMBG GGML inference audit
 
-BiRefNet-family background removal with a device-resident GGML graph.
+Last reviewed on 2026-08-18. This repository implements a BiRefNet-family background-removal
+graph on ggml. The checked benchmark fixture and local GGUF files use
+`ZhengPeng7/BiRefNet`; they are not a quality evaluation of the gated BRIA weights.
 
-## Status (2026-08-04)
+## Acceptance criteria
 
-The 1024x1024 end-to-end graph is implemented in `src/rmbg_graph.cpp`:
+An optimization is accepted only when all of the following remain true:
 
-- two-scale Swin-L encoder (24 blocks per pass)
-- context fusion and squeeze module
-- decoder blocks, lateral fusion, GDT attention, and input patches
-- ASPP deformable convolution with a fused CUDA im2col sampler and a primitive fallback
-- Swin-L `head_dim=32` CUDA attention with fused shifted-window pack/unpack,
-  QKV bias/split, relative-position bias, shifted mask, softmax, and output projection
-- sigmoid alpha output
-- CUDA, Vulkan, and CPU backend execution
-- encoded image bytes to original-size RGBA PNG through the C++ and C APIs
+1. The workload tuple is unchanged: model hash, input hash, 1024x1024 resolution,
+   batch 1, output copy, backend, math mode, warmup, and sample count.
+2. The sigmoid alpha output passes the checked fixture gate: maximum absolute
+   difference no greater than `2e-3`.
+3. Weights and intermediates stay on the selected backend; only input and final alpha
+   cross the host/device boundary.
+4. Every ggml source modification is reproducible from the pinned submodule commit and
+   `third_party/ggml-rmbg.patch` through a normal CMake configure.
 
-The runtime keeps weights and intermediates on the selected backend. Only the input
-tensor and final alpha tensor cross the host/device boundary.
+This matters because a lower timing that changes precision beyond the gate, uses a
+different model, or silently falls back to CPU is not an inference acceleration.
 
-## Design decision
+## Implemented graph
 
-| Option | Result | Reason |
-|---|---|---|
-| A: pure GGML primitives | Vulkan fallback | Complete and portable, but generic deform/im2col nodes leave performance on the table |
-| B: one GGML graph with backend-fused nodes | Selected | Keeps device ownership and one graph while allowing CUDA deform sampling and cuDNN convolution |
-| C: segmented graphs | Reserve only | Useful when a device cannot allocate the full graph, but adds submissions and persistent boundary buffers |
+The end-to-end graph in `src/rmbg_graph.cpp` contains:
 
-"Hybrid" here means backend-native nodes inside the GGML graph, not CPU/GPU tensor
-handoffs. CUDA uses a fused deformable-im2col kernel followed by GGML GEMM. Swin
-attention is one GGML custom node per block; dense projections and QK/AV use cuBLAS
-inside that node, while layout conversion, shifted masking, relative-position bias,
-and softmax use dedicated CUDA kernels. When
-cuDNN is found at configure time, ordinary F32 convolutions use cuDNN with a bounded
-512 MiB temporary workspace; otherwise they fall back to GGML im2col. Vulkan uses
-the same graph builder and primitive implementations, with exact F32 custom gathers
-for RMBG input patches and Swin patch merge. Attention and deform sampling remain
-primitive Vulkan graphs.
+- two-scale Swin-L encoder, 24 blocks per pass;
+- context fusion and squeeze module;
+- decoder blocks, lateral fusion, GDT attention, and input patches;
+- ASPP deformable convolution;
+- sigmoid alpha output;
+- CPU, CUDA, and Vulkan backend execution;
+- original-size RGBA output through the C++ and C APIs.
+
+CUDA uses dedicated shifted-window attention, gather/layout, deformable-im2col, channel
+affine, and optional cuDNN convolution paths. The cuDNN implementation caches its
+handle, tensor/filter/convolution descriptors, selected algorithm, and workspace size
+per device and convolution shape.
+
+Vulkan uses exact F32 gather/layout shaders and now handles both affine and
+affine-plus-ReLU in one shader with a push-constant mode. The accepted optimized
+profile also uses direct convolution with a scalar F32-accumulation pipeline and a
+per-node CM1 whitelist for the four encoder stages plus the validated decoder
+projections. Strict attention and deformable convolution retain validated primitive
+paths. The experimental fused Vulkan deform-project path remains opt-in because it did
+not improve the accepted result.
+
+CPU executes the same graph with an explicit thread count. Merely linking MKL was not
+reported as an optimization: this graph is scheduled to the CPU backend, not
+automatically partitioned to ggml's separate BLAS backend.
 
 ## Numerical modes
 
-CUDA fast mode keeps TF32 enabled and is the production default. Strict regression
-mode is enabled with `RMBG_STRICT_MATH=1`, which sets:
+`optimized` is the production mode. It is the default for CUDA and Vulkan and keeps
+the measured fast paths that pass the `2e-3` alpha gate. Strict mode is not a quality
+mode or a separate model: it is a slower arithmetic/reference profile used to detect
+rounding regressions and compare backends against an F32 baseline. It is important for
+validation, but should not be selected for normal inference.
 
-- CUDA strict: `NVIDIA_TF32_OVERRIDE=0`
-- Vulkan: disable FP16, cooperative-matrix, and integer-dot narrowing
+CUDA optimized permits TF32 GEMMs with FP32 accumulation. Set `RMBG_STRICT_MATH=1`
+for strict FP32 math; this also makes an auto-selected Vulkan backend use its strict
+profile, so set it only for diagnostics.
 
-Vulkan applies the listed narrowing-disable flags by default. Set
-`RMBG_VULKAN_FAST=1` to enable the device's F16/cooperative-matrix route only when its
-separately measured parity is acceptable. Strict settings are required for the strict
-parity numbers below.
+Vulkan `RMBG_VULKAN_MODE=optimized` disables unsafe FP16/CM2/integer-dot narrowing,
+enables scalar direct convolution, and allows CM1 only for
+`bb_layers_0` through `bb_layers_3` and `sq0_`/`db4_`/`db3_`/`db2_`/`db1_`.
+`RMBG_VULKAN_MODE=strict` disables all narrowing, CM1, CM2, integer dot product, and
+direct convolution. `RMBG_VULKAN_MODE=unsafe-fast` (or legacy
+`RMBG_VULKAN_FAST=1`) enables every device fast path and is diagnostic only because it
+fails the gate on the checked RTX 3060.
 
-| Backend | max alpha abs diff | mean alpha abs diff | Result |
+Code that creates a ggml backend directly must call
+`rmbg::configure_backend_profile(device)` before `ggml_backend_init*`. The high-level
+`load_gguf` API performs this automatically; this ordering is required because Vulkan
+device capabilities are fixed during backend initialization.
+
+F16 model weights do not mean that every activation or accumulator is F16. The strict
+F16-model cases retain the F32 compute route where required for parity.
+
+| Case | max alpha abs diff | mean alpha abs diff | Gate |
 |---|---:|---:|---|
-| CUDA fast TF32 + fused Swin | 1.315e-3 | 1.029e-6 | pass, no pixel above 2e-3 |
-| CUDA FP32 + cuDNN + fused Swin | 1.122e-4 | 1.389e-7 | pass |
-| Vulkan FP32 | 1.081e-4 | 1.383e-7 | pass |
+| CUDA F32/F16 strict | 1.131e-4 | 1.383e-7 | pass |
+| CUDA F32/F16 optimized | 1.430e-3 | 1.039e-6 | pass |
+| Vulkan F32/F16 strict | 1.099e-4 | 1.378e-7 | pass |
+| CPU F32/F16 strict | 1.052e-4 | 1.104e-7 | pass |
+| Vulkan optimized F32/F16 | 1.533e-3 (measured max) | 9.681e-7 | pass |
+| Vulkan unsafe-fast F32/F16 | 5.509e-3 | 1.666e-6 | **fail** |
+| Q8, any backend/mode | 3.170e-2 to 3.614e-2 | varies | **fail** |
 
-The reference is the PyTorch sigmoid output in `tests/fixtures/alpha_ref.gguf`.
+The reference logits are stored in `tests/fixtures/alpha_ref.gguf`. The test runner
+prints the actual initialized backend and returns nonzero when the `2e-3` gate fails.
 
-## Performance
+## Current performance
 
-RTX 3060, 1024x1024, batch 1, output copied to host, warm steady state:
+Hardware and software: NVIDIA RTX 3060 12 GiB, driver 550.144.03, Ryzen 9 5950X,
+PyTorch 2.6.0+cu118, CUDA runtime 11.8. GPU results use seven timed iterations after two
+warmups. CPU results use 16 threads and two timed iterations. All values below are from
+the same schema-v2 report generated at `2026-08-17T21:12:02+08:00`.
 
-| Runtime | Mean latency | Relative to PyTorch CPU |
-|---|---:|---:|
-| GGML CUDA fast TF32 + cuDNN | 592.29 ms | 23.07x faster |
-| GGML CUDA strict FP32 + cuDNN | 763.56 ms | 17.89x faster |
-| GGML Vulkan strict FP32 | 1293.35 ms | 10.56x faster |
-| PyTorch CPU FP32 | 13662.23 ms | baseline |
-| PyTorch CUDA FP32 | 705.45 ms | GGML CUDA fast is 1.19x faster |
+### Valid cases
 
-CUDA now uses a dedicated `head_dim=32` Swin attention node. The node packs shifted
-windows, runs QKV projection, fuses bias and QKV split into a contiguous head layout,
-uses strided-batched QK/AV GEMMs, fuses relative-position bias plus shifted mask plus
-softmax, projects the result, and unpacks directly to token order. This removes the
-generic `get_rows`, Q/K/V `cont`/`permute`, mask-add, and inverse-window nodes from the
-production CUDA graph.
+| Runtime / model / mode | Median | p95 | Matching comparison | Result |
+|---|---:|---:|---:|---|
+| PyTorch CUDA FP32 strict | 722.23 ms | 726.66 ms | baseline | reference |
+| PyTorch CUDA FP32 optimized | 559.96 ms | 564.92 ms | baseline | reference |
+| GGML CUDA F32 optimized | 573.12 ms | 575.18 ms | 0.977x vs PyTorch optimized | pass |
+| GGML CUDA F16 optimized | **570.17 ms** | 573.26 ms | 0.982x vs PyTorch optimized | pass |
+| GGML CUDA F32 strict | 745.90 ms | 750.30 ms | 0.968x vs PyTorch strict | pass |
+| GGML CUDA F16 strict | 748.71 ms | 754.54 ms | 0.965x vs PyTorch strict | pass |
+| GGML Vulkan F32 optimized | 682.32 ms | 684.41 ms | 0.821x vs PyTorch optimized | pass, 1.058x vs strict |
+| GGML Vulkan F16 optimized | **675.88 ms** | 692.86 ms | 0.828x vs PyTorch optimized | pass, 1.069x vs strict |
+| GGML Vulkan F32 strict | 1259.02 ms | 1267.05 ms | 0.574x vs PyTorch strict | pass |
+| GGML Vulkan F16 strict | 1256.48 ms | 1259.14 ms | 0.575x vs PyTorch strict | pass |
+| GGML CPU F16 strict | 15201.65 ms | 15281.42 ms | 0.048x vs PyTorch CUDA strict | pass |
+| GGML CPU F32 strict | 15545.47 ms | 15577.00 ms | 0.046x vs PyTorch CUDA strict | pass |
 
-The CUDA fast path exceeds the measured PyTorch CUDA baseline within the accepted
-alpha tolerance. The current PyTorch baseline uses PyTorch 2.7.1+cu118 with TF32
-disabled and all current CUDA numbers use 12 warm steady-state iterations. The latest
-CUDA work shares each deformable-convolution offset and modulation value across its
-channel tile, reducing its sampled-im2col kernel from 123.9 ms to 22.8 ms in the CUDA
-profile. CUDA Graph replay was tested and did not improve this compute-bound workload.
-Vulkan has exact F32 custom gather shaders for input patches and Swin patch merge.
-Its attention and deform paths remain primitive graphs; custom attention/deform shaders
-are the next backend-specific performance work, not a correctness dependency.
+The direct answer to whether ggml is faster than local PyTorch CUDA is mode-specific:
 
-## GGUF model precision
+- CUDA optimized F32/F16 are 2.3% and 1.8% slower than PyTorch optimized on this machine.
+- CUDA strict is 3.2% to 3.7% slower than PyTorch strict.
+- Vulkan optimized F32/F16 are 18.0% and 17.2% slower than PyTorch optimized, but 5.8%
+  and 6.9% faster than PyTorch strict. Vulkan strict remains 1.74x to 1.75x slower than
+  PyTorch strict and is retained for numerical diagnosis.
 
-`models/rmbg_f32.gguf` and `models/rmbg_f16.gguf` are the supported complete
-end-to-end models. The loader retains their original weight type instead of turning all
-tensors into F32 at load time. F32 is the reference; F16 keeps matrix weights in F16 on
-Vulkan and is the deployment default.
+### Rejected cases
 
-RTX 3060, batch 1, 1024x1024, five warm steady-state iterations:
+| Runtime / model / mode | Median | max fixture diff | Reason rejected |
+|---|---:|---:|---|
+| GGML CUDA Q8 optimized | 572.55 ms | 3.334e-2 | parity failure |
+| GGML CUDA Q8 strict | 748.68 ms | 3.170e-2 | parity failure |
+| GGML Vulkan Q8 optimized | 664.93 ms | 3.638e-2 | parity failure |
+| GGML Vulkan Q8 strict | 1271.13 ms | 3.170e-2 | parity failure |
+| GGML CPU Q8 strict | 15887.40 ms | 3.173e-2 | parity failure |
 
-| Model | File size | CUDA strict | Vulkan strict | max alpha abs diff |
-|---|---:|---:|---:|---:|
-| F32 | 841.9 MiB | 644.53 ms | 1293.35 ms | 1.122e-4 |
-| F16 | 421.0 MiB | 655.18 ms | 1278.46 ms | 1.122e-4 |
+Q8 is measured because the artifact exists locally, but it is not a supported deployment
+format. A benchmark runner must not rank a failed case as the recommended result.
 
-Q8 is not an RMBG deployment format. Its parity-safe hybrid saved only 16.9 MiB relative
-to F16 and did not improve CUDA or Vulkan latency; full Q8 quantization failed the alpha
-gate, so the artifact and export option were removed. The strict Vulkan path deliberately
-disables FP16/cooperative matrix/integer-dot narrowing because the device's
-cooperative-matrix path measured 887.10 ms but a 5.048e-3 alpha error. It can be enabled
-explicitly with `RMBG_VULKAN_FAST=1` when that relaxed tolerance is valid for the
-deployment.
+## GGUF model matrix
 
-The `rmbg_image_patches_*` and `rmbg_patch_merge_*` Vulkan nodes use no arithmetic
-approximation and preserve the strict alpha result. They remove constant-index
-`GET_ROWS` work, but do not by themselves make Vulkan competitive with PyTorch CUDA:
-the dominant remaining work is deformable `IM2COL`, activation layout copies, and
-fragmented Swin attention GEMMs.
+| Model | Bytes | MiB | SHA-256 |
+|---|---:|---:|---|
+| F32 | 882846304 | 841.9 | `73fa93582743128e392b6e5b6be821e5b67361dcd5a5c0deca0ae4077e4c0ddd` |
+| F16 | 441451648 | 421.0 | `50aaf0c7570df97b3767909394d9a63c93effe9f01dc863b17fa69d5f76eb8e3` |
+| Q8 experimental | 258974848 | 247.0 | `a2f432614d91057614c59745d40a1770b1a84455f5f853174629b05fc7c8e079` |
+
+Newly converted files contain `rmbg.model_id` metadata. The benchmark report records
+model size and SHA even for older local files that predate that metadata.
+
+## Benchmark artifacts
+
+`scripts/benchmark_full.py` discovers F32, F16, and Q8 models, validates that the
+requested backend is the backend actually initialized, runs all backend/mode cases,
+records every raw timing sample, and captures the input/model/source/patch hashes and
+measurement load context.
+
+Generated artifacts:
+
+- `docs/rmbg_benchmark.json`: complete schema-v2 data for all 17 cases;
+- `docs/rmbg_all_outputs_comparison.png`: every measured output with latency and gate;
+- `docs/rmbg_inference_comparison.png`: representative masks and final resized 8-bit PNG
+  alpha differences; PASS/FAIL still comes from the raw 1024x1024 float fixture;
+- `docs/rmbg_latency_comparison.png`: GPU latency, CPU latency, speedup, and parity.
+
+Reproduce the matrix after building all three backends:
+
+```bash
+python scripts/benchmark_full.py --input docs/images/t4.png \
+  --pytorch-model ZhengPeng7/BiRefNet --math-modes strict optimized \
+  --runs 7 --warmup 2 \
+  --cpu-runs 2 --cpu-warmup 0 --cpu-threads 16 --local-files-only
+python scripts/plot_benchmarks.py
+```
+
+The report records the source commit, working-tree state, pinned ggml commit, and patch
+SHA. Regenerate it after source, model, benchmark, or patch changes.
+
+## Reproducible ggml patch integration
+
+The ggml submodule is pinned at:
+
+```text
+06ca97616793248fadb410ea8d69c7511b2005e4
+```
+
+All local changes, including CUDA and Vulkan source, shaders, declarations, CMake
+linkage, and ggml version handling, are in `third_party/ggml-rmbg.patch` with SHA-256:
+
+```text
+1e707fee4c867a4ab6602f1cd6858249803c96949cf7950496484d8b39cbe67b
+```
+
+Top-level CMake performs this sequence:
+
+1. Read the actual submodule `HEAD` and fail if it cannot be resolved.
+2. Hash the patch and register it in `CMAKE_CONFIGURE_DEPENDS`.
+3. Export the pinned commit with `git archive` into a content-addressed build directory.
+4. Run `git apply --check`, apply the patch, then run reverse-check verification.
+5. Verify a required RMBG CUDA source exists before writing the stamp.
+6. Inject `<ggml-commit>+rmbg.<patch-hash>` into the built ggml version.
+7. Call `add_subdirectory` on the patched build-tree copy, never the mutable submodule.
+
+Git repository discovery is explicitly capped at the build directory during apply. This
+prevents Git from walking up to the parent repository and incorrectly returning success
+while treating every patch path as outside the work tree.
+
+A normal developer build is sufficient:
+
+```bash
+git submodule update --init --recursive third_party/ggml
+
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+
+cmake -S . -B build-cuda -DCMAKE_BUILD_TYPE=Release -DRMBG_GGML_CUDA=ON
+cmake --build build-cuda -j
+
+cmake -S . -B build-vulkan -DCMAKE_BUILD_TYPE=Release -DRMBG_GGML_VULKAN=ON
+cmake --build build-vulkan -j
+```
+
+No manual `git apply` is part of the developer workflow. A stale or incompatible patch
+fails configuration rather than silently dropping a fix.
+
+## Optimization audit
+
+### Accepted this round
+
+- Cached cuDNN handles, shape descriptors, algorithm selection, and workspace sizing.
+  This removes repeated host setup while retaining the same convolution math mode.
+- Added Vulkan dispatch/support for both channel affine and affine-plus-ReLU, allowing
+  BatchNorm affine work to stay fused even where ReLU is absent.
+- Preserved the existing exact CUDA deformable sampler and strict Vulkan fallbacks.
+- Added raw-sample and p95 reporting, exact backend validation, fixture gates, model and
+  patch hashes, output images, and machine-load context.
+
+### Measured and rejected
+
+- A host-dispatched custom CUDA MLP was fixed so it actually activated, then measured at
+  1353.55 ms with `5.269e-3` max error. It disrupted whole-graph capture/replay and was
+  removed from both the graph and patch.
+- F16-input CUDA MLP GEMMs exceeded the `2e-3` gate; they remain experimental and off.
+- Vulkan all-cooperative-matrix/FP16 unsafe-fast mode is substantially faster but fails
+  parity; only the measured CM1 whitelist is enabled by default.
+- Direct Vulkan convolution removes the largest explicit IM2COL allocation and is paired
+  with a scalar pipeline so the convolution itself does not accumulate CM1 rounding.
+- Vulkan graph submission now flushes on a FLOP budget, matching the upstream scheduler
+  fix and avoiding a single oversized command batch.
+- The Vulkan deform-project fusion did not improve the accepted route and remains opt-in.
+- Q8 reduces file size but fails parity on every backend and does not beat valid CUDA
+  optimized F32/F16.
+
+### Remaining acceleration space
+
+The graph still has acceleration space, but the safe opportunities differ by backend:
+
+1. CUDA: fuse bias/residual/GELU epilogues into existing GEMMs and reduce layout copies.
+   The accepted CUDA optimized F32 result is 2.3% slower than PyTorch optimized, so
+   changes must be measured mode-for-mode rather than against the slower strict baseline.
+2. CUDA: retain graph replay by using backend-native nodes; avoid host custom-op
+   dispatch inside the captured graph.
+3. Vulkan: profile the optimized direct-convolution and CM1 whitelist on multiple
+   vendors. The RTX 3060 result is the acceptance baseline, not a guarantee for AMD or
+   Intel hardware.
+4. Vulkan: replace the scalar direct-convolution output with a tile-fused sampler only
+   when boundary interpolation and F32 accumulation remain within the gate.
+5. CPU: backend scheduling and data layout are the meaningful levers. Linking a BLAS
+   library without moving eligible nodes to that backend is not an optimization.
+6. Model level: reaching 100 ms on an RTX 3060 is not realistic for the unchanged
+   two-scale Swin-L graph; distillation, structured pruning, or a smaller input is needed
+   for that class of target.
+
+Every future optimization should add its case to the same report and remain disabled or
+rejected when it cannot pass the fixture gate.
 
 ## Build and run
 
 ```bash
 cmake -S . -B build-cuda -DRMBG_GGML_CUDA=ON -DRMBG_BUILD_TESTS=ON
 cmake --build build-cuda -j
-ctest --test-dir build-cuda -R 'swin_graph_full|rmbg_graph' --output-on-failure
+ctest --test-dir build-cuda -R rmbg_graph --output-on-failure
 
 ./build-cuda/rmbg-cli remove \
   --model models/rmbg_f16.gguf \
   --input input.png --output output.png --device cuda
 ```
 
-The split conversion fixtures are deliberately isolated in `models/development/`.
-Passing `models/development/encoder_f16.gguf` automatically merges its sibling
-`decoder_alpha_f16.gguf`. New deployments should generate one unified file:
+Generate a unified model with explicit source identity:
 
 ```bash
 python scripts/convert_rmbg_to_gguf.py \
-  --model ZhengPeng7/BiRefNet --out models/rmbg_f16.gguf --ftype 1
+  --model ZhengPeng7/BiRefNet --model-id ZhengPeng7/BiRefNet \
+  --out models/rmbg_f16.gguf --ftype 1
 ```
-
-The converter exports only runtime tensors and shortens decoder names to stay within
-ggml's tensor-name limit.

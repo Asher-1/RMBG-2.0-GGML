@@ -214,3 +214,5 @@ models/development/*
 .qoder/
 build-cuda/
 build-vulkan/
+build-cpu-mkl/
+benchmark_results_current/

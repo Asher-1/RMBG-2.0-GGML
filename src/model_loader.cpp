@@ -30,33 +30,76 @@ static void clear_env(const char * key) {
 #endif
 }
 
-static void configure_strict_math(const char * device) {
+static bool env_enabled(const char * key) {
+    const char * value = std::getenv(key);
+    return value && value[0] && std::strcmp(value, "0") != 0;
+}
+
+static void configure_vulkan_math() {
+    // The production path is the measured, parity-safe compromise.  Keep the
+    // old RMBG_VULKAN_FAST name as an explicit alias for the unsafe experiment
+    // so existing scripts do not silently change numerical behavior.
+    const char * requested = std::getenv("RMBG_VULKAN_MODE");
+    std::string mode = lower(requested ? requested : "");
+    if (mode.empty()) {
+        mode = env_enabled("RMBG_VULKAN_STRICT") || env_enabled("RMBG_STRICT_MATH")
+            ? "strict" : env_enabled("RMBG_VULKAN_FAST") ? "unsafe-fast" : "optimized";
+    }
+    if (mode != "strict" && mode != "unsafe-fast" && mode != "fast" && mode != "optimized") {
+        mode = "optimized";
+    }
+    set_env("RMBG_VULKAN_MODE", mode.c_str());
+
+    if (mode == "strict") {
+        set_env("GGML_VK_DISABLE_F16", "1");
+        set_env("GGML_VK_DISABLE_COOPMAT", "1");
+        set_env("GGML_VK_DISABLE_COOPMAT2", "1");
+        set_env("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "1");
+        clear_env("RMBG_VK_DIRECT_CONV");
+        clear_env("RMBG_VK_SCALAR_DIRECT_CONV");
+        clear_env("RMBG_VK_COOPMAT_MATMUL");
+        return;
+    }
+
+    if (mode == "unsafe-fast" || mode == "fast") {
+        clear_env("GGML_VK_DISABLE_F16");
+        clear_env("GGML_VK_DISABLE_COOPMAT");
+        clear_env("GGML_VK_DISABLE_COOPMAT2");
+        clear_env("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT");
+        clear_env("RMBG_VK_DIRECT_CONV");
+        clear_env("RMBG_VK_SCALAR_DIRECT_CONV");
+        clear_env("RMBG_VK_COOPMAT_MATMUL");
+        return;
+    }
+
+    // optimized: F32 accumulation stays enabled for sensitive work, while
+    // only the validated CM1 matmuls and scalar direct convolutions are used.
+    set_env("GGML_VK_DISABLE_F16", "1");
+    clear_env("GGML_VK_DISABLE_COOPMAT");
+    set_env("GGML_VK_DISABLE_COOPMAT2", "1");
+    set_env("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "1");
+    set_env("RMBG_VK_DIRECT_CONV", "1");
+    set_env("RMBG_VK_SCALAR_DIRECT_CONV", "1");
+    const char * whitelist = std::getenv("RMBG_VK_COOPMAT_MATMUL");
+    if (!whitelist || !whitelist[0]) {
+        set_env("RMBG_VK_COOPMAT_MATMUL",
+                "bb_layers_0,bb_layers_1,bb_layers_2,bb_layers_3,sq0_,db4_,db3_,db2_,db1_");
+    }
+}
+
+void configure_backend_profile(const char * device) {
     const std::string requested = lower(device ? device : "auto");
+    const bool generic_gpu = requested == "gpu";
     const char * strict = std::getenv("RMBG_STRICT_MATH");
     const bool strict_math = strict && strict[0] && std::strcmp(strict, "0") != 0;
-    if (strict_math && (requested == "auto" || requested.rfind("cuda", 0) == 0)) {
+    if (strict_math &&
+        (requested == "auto" || generic_gpu || requested.rfind("cuda", 0) == 0)) {
         // Set RMBG_STRICT_MATH=1 for bit-stable FP32 GEMMs. The default keeps
         // cuBLAS TF32 enabled; its measured alpha error remains below 1.4e-3.
         set_env("NVIDIA_TF32_OVERRIDE", "0");
     }
-    if (requested == "auto" || requested.rfind("vulkan", 0) == 0) {
-        const char * fast = std::getenv("RMBG_VULKAN_FAST");
-        const bool fast_math = fast && fast[0] && std::strcmp(fast, "0") != 0;
-        if (!fast_math) {
-            // Strict Vulkan is the default because cooperative matrix shaders
-            // exceed the alpha parity threshold for the F32 reference model.
-            set_env("GGML_VK_DISABLE_F16", "1");
-            set_env("GGML_VK_DISABLE_COOPMAT", "1");
-            set_env("GGML_VK_DISABLE_COOPMAT2", "1");
-            set_env("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "1");
-        } else {
-            // A parent shell may previously have run strict mode. Explicitly
-            // clear the opt-out flags so RMBG_VULKAN_FAST is deterministic.
-            clear_env("GGML_VK_DISABLE_F16");
-            clear_env("GGML_VK_DISABLE_COOPMAT");
-            clear_env("GGML_VK_DISABLE_COOPMAT2");
-            clear_env("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT");
-        }
+    if (requested == "auto" || generic_gpu || requested.rfind("vulkan", 0) == 0) {
+        configure_vulkan_math();
     }
 }
 
@@ -67,7 +110,7 @@ static std::string lower(std::string value) {
 }
 
 static ggml_backend_t pick_backend(const char * device) {
-    configure_strict_math(device);
+    configure_backend_profile(device);
     if (!device || !device[0] || std::strcmp(device, "auto") == 0) {
         ggml_backend_t b = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
         if (b) return b;

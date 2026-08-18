@@ -7,10 +7,10 @@ Only the following files are supported, deployable RMBG end-to-end models:
 | `rmbg_f32.gguf` | F32 | Numerical reference and strict parity baseline. |
 | `rmbg_f16.gguf` | F16 | Default deployment model. Half the F32 weight footprint. |
 
-There is no Q8 deployment model. The former hybrid Q8 file saved only 16.9 MiB relative
-to F16 and did not improve CUDA or Vulkan latency; full Q8 quantization also violated
-the `2e-3` alpha gate. It has been removed. GGML's generic Q8 reader remains unchanged,
-but this repository no longer exports or distributes an RMBG Q8 artifact.
+There is no supported Q8 deployment model. `rmbg_q8.gguf` may be present in a working
+checkout as an experimental benchmark artifact, but it violates the `2e-3` alpha gate
+on CPU, CUDA, and Vulkan and is not recommended or released as a deployment file.
+GGML's generic Q8 reader remains unchanged.
 
 Development and unit-test assets live in [`development/README.md`](development/README.md),
 separate from selectable deployment models.
