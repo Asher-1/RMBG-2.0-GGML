@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "ggml-backend.h"
+#include "rmbg.hpp"
 #include "swin_backbone.hpp"
 
 namespace rmbg {
@@ -17,7 +18,11 @@ public:
     RmbgDeviceGraph & operator=(const RmbgDeviceGraph &) = delete;
 
     bool init(ggml_backend_t backend, const WeightMap & weights, int input_size,
-              std::string & err);
+              const BackendOptions & options, std::string & err);
+    inline bool init(ggml_backend_t backend, const WeightMap & weights, int input_size,
+                     std::string & err) {
+        return init(backend, weights, input_size, BackendOptions{}, err);
+    }
     bool forward(const std::vector<float> & input_nchw, std::vector<float> & alpha,
                  std::string & err);
 

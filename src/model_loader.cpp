@@ -30,76 +30,72 @@ static void clear_env(const char * key) {
 #endif
 }
 
-static bool env_enabled(const char * key) {
-    const char * value = std::getenv(key);
-    return value && value[0] && std::strcmp(value, "0") != 0;
+// Explicit routing hooks provided by the patched ggml-vulkan backend.
+// Weak-declared so CPU-only/CUDA-only builds still link; a null symbol is a no-op.
+#if defined(__GNUC__) && !defined(_WIN32)
+extern "C" void ggml_backend_vk_set_f32_matmul_exact(bool exact) __attribute__((weak));
+extern "C" void ggml_backend_vk_set_scalar_direct_conv(bool scalar) __attribute__((weak));
+static void set_f32_matmul_exact(bool exact) {
+    if (ggml_backend_vk_set_f32_matmul_exact) {
+        ggml_backend_vk_set_f32_matmul_exact(exact);
+    }
 }
-
-static void configure_vulkan_math() {
-    // The production path is the measured, parity-safe compromise.  Keep the
-    // old RMBG_VULKAN_FAST name as an explicit alias for the unsafe experiment
-    // so existing scripts do not silently change numerical behavior.
-    const char * requested = std::getenv("RMBG_VULKAN_MODE");
-    std::string mode = lower(requested ? requested : "");
-    if (mode.empty()) {
-        mode = env_enabled("RMBG_VULKAN_STRICT") || env_enabled("RMBG_STRICT_MATH")
-            ? "strict" : env_enabled("RMBG_VULKAN_FAST") ? "unsafe-fast" : "optimized";
+static void set_scalar_direct_conv(bool scalar) {
+    if (ggml_backend_vk_set_scalar_direct_conv) {
+        ggml_backend_vk_set_scalar_direct_conv(scalar);
     }
-    if (mode != "strict" && mode != "unsafe-fast" && mode != "fast" && mode != "optimized") {
-        mode = "optimized";
-    }
-    set_env("RMBG_VULKAN_MODE", mode.c_str());
+}
+#else
+static void set_f32_matmul_exact(bool) {}
+static void set_scalar_direct_conv(bool) {}
+#endif
 
-    if (mode == "strict") {
+static void configure_vulkan_math(const BackendOptions & options) {
+    // The GGML_VK_* device-shader toggles below are read from the environment
+    // inside ggml at Vulkan device creation (before any explicit API exists),
+    // so they must stay env-based. Everything RMBG controls is explicit.
+    if (options.vulkan_mode == BackendOptions::VulkanMode::Strict) {
         set_env("GGML_VK_DISABLE_F16", "1");
         set_env("GGML_VK_DISABLE_COOPMAT", "1");
         set_env("GGML_VK_DISABLE_COOPMAT2", "1");
         set_env("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "1");
-        clear_env("RMBG_VK_DIRECT_CONV");
-        clear_env("RMBG_VK_SCALAR_DIRECT_CONV");
-        clear_env("RMBG_VK_COOPMAT_MATMUL");
+        set_scalar_direct_conv(false);
+        set_f32_matmul_exact(true);
         return;
     }
-
-    if (mode == "unsafe-fast" || mode == "fast") {
+    if (options.vulkan_mode == BackendOptions::VulkanMode::UnsafeFast) {
         clear_env("GGML_VK_DISABLE_F16");
         clear_env("GGML_VK_DISABLE_COOPMAT");
         clear_env("GGML_VK_DISABLE_COOPMAT2");
         clear_env("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT");
-        clear_env("RMBG_VK_DIRECT_CONV");
-        clear_env("RMBG_VK_SCALAR_DIRECT_CONV");
-        clear_env("RMBG_VK_COOPMAT_MATMUL");
+        set_scalar_direct_conv(false);
+        // Opt-out: f32 matmuls may take the coopmat/tensor-core path.
+        set_f32_matmul_exact(false);
         return;
     }
 
-    // optimized: F32 accumulation stays enabled for sensitive work, while
-    // only the validated CM1 matmuls and scalar direct convolutions are used.
+    // Optimized (default): F32 accumulation stays enabled for sensitive work —
+    // exact fp32 f32-matmul routing + scalar direct convolutions, coopmat kept
+    // for f16/quantized matmuls.
     set_env("GGML_VK_DISABLE_F16", "1");
     clear_env("GGML_VK_DISABLE_COOPMAT");
     set_env("GGML_VK_DISABLE_COOPMAT2", "1");
     set_env("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "1");
-    set_env("RMBG_VK_DIRECT_CONV", "1");
-    set_env("RMBG_VK_SCALAR_DIRECT_CONV", "1");
-    const char * whitelist = std::getenv("RMBG_VK_COOPMAT_MATMUL");
-    if (!whitelist || !whitelist[0]) {
-        set_env("RMBG_VK_COOPMAT_MATMUL",
-                "bb_layers_0,bb_layers_1,bb_layers_2,bb_layers_3,sq0_,db4_,db3_,db2_,db1_");
-    }
+    set_scalar_direct_conv(options.scalar_direct_conv);
+    set_f32_matmul_exact(options.f32_matmul_exact);
 }
 
-void configure_backend_profile(const char * device) {
+void configure_backend_profile(const char * device, const BackendOptions & options) {
     const std::string requested = lower(device ? device : "auto");
     const bool generic_gpu = requested == "gpu";
-    const char * strict = std::getenv("RMBG_STRICT_MATH");
-    const bool strict_math = strict && strict[0] && std::strcmp(strict, "0") != 0;
-    if (strict_math &&
+    if (options.strict_math &&
         (requested == "auto" || generic_gpu || requested.rfind("cuda", 0) == 0)) {
-        // Set RMBG_STRICT_MATH=1 for bit-stable FP32 GEMMs. The default keeps
-        // cuBLAS TF32 enabled; its measured alpha error remains below 1.4e-3.
+        // Bit-stable FP32 GEMMs (TF32 off). The default keeps cuBLAS TF32
+        // enabled; its measured alpha error remains below 1.4e-3.
         set_env("NVIDIA_TF32_OVERRIDE", "0");
     }
     if (requested == "auto" || generic_gpu || requested.rfind("vulkan", 0) == 0) {
-        configure_vulkan_math();
+        configure_vulkan_math(options);
     }
 }
 
@@ -109,8 +105,8 @@ static std::string lower(std::string value) {
     return value;
 }
 
-static ggml_backend_t pick_backend(const char * device) {
-    configure_backend_profile(device);
+static ggml_backend_t pick_backend(const char * device, const BackendOptions & options) {
+    configure_backend_profile(device, options);
     if (!device || !device[0] || std::strcmp(device, "auto") == 0) {
         ggml_backend_t b = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
         if (b) return b;
@@ -130,7 +126,8 @@ static ggml_backend_t pick_backend(const char * device) {
     return nullptr;
 }
 
-bool load_gguf(const char * path, const char * device, Model & out, std::string & err) {
+bool load_gguf(const char * path, const char * device, const BackendOptions & options,
+               Model & out, std::string & err) {
     if (!path || !path[0]) { err = "empty path"; return false; }
     free_model(out);
 
@@ -168,12 +165,12 @@ bool load_gguf(const char * path, const char * device, Model & out, std::string 
         ggml_free(meta);
     }
 
-    out.backend = pick_backend(device);
+    out.backend = pick_backend(device, options);
     if (!out.backend) { err = std::string("requested ggml backend unavailable: ") +
                               (device ? device : "auto"); return false; }
     out.backend_name = ggml_backend_name(out.backend);
     std::unique_ptr<RmbgDeviceGraph> graph(new RmbgDeviceGraph);
-    if (!graph->init(out.backend, weights, out.cfg.input_size, err)) {
+    if (!graph->init(out.backend, weights, out.cfg.input_size, options, err)) {
         graph.reset();
         ggml_backend_free(out.backend);
         out.backend = nullptr;

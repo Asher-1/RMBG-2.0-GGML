@@ -56,47 +56,38 @@ struct GraphBuilder {
     bool use_nn_gemm = false;
     int f16_min_stage = 2;
     const WeightMap & weights;
+    BackendOptions options;
     std::unordered_map<std::string, ggml_tensor *> weight_cache;
     std::vector<StaticBlob> blobs;
     int constant_id = 0;
 
     GraphBuilder(ggml_context * stat_, ggml_context * ctx_, ggml_backend_t backend_,
-                 const WeightMap & weights_)
-        : stat(stat_), ctx(ctx_), backend(backend_), weights(weights_) {
+                 const WeightMap & weights_, const BackendOptions & options_)
+        : stat(stat_), ctx(ctx_), backend(backend_), weights(weights_), options(options_) {
         const char * name = ggml_backend_name(backend);
         use_cuda_custom = name && std::strstr(name, "CUDA");
         use_backend_custom = name && (std::strstr(name, "CUDA") || std::strstr(name, "Vulkan"));
         use_vulkan_custom = name && std::strstr(name, "Vulkan");
-        const char * direct_conv = std::getenv("RMBG_VK_DIRECT_CONV");
-        use_vulkan_direct_conv = use_vulkan_custom && direct_conv && direct_conv[0] &&
-                                 std::strcmp(direct_conv, "0") != 0;
+        use_vulkan_direct_conv = use_vulkan_custom && options.direct_conv &&
+                                 options.vulkan_mode == BackendOptions::VulkanMode::Optimized;
         is_cpu_backend = name && std::strstr(name, "CPU");
         // F16-in/FP32-accumulate GEMMs for the Swin MLP linear layers.  The
         // 10-bit FP16 mantissa matches TF32 precision while GeForce tensor
-        // cores run FP16 at twice the TF32 rate.  Strict mode (RMBG_STRICT_MATH
-        // or NVIDIA_TF32_OVERRIDE=0) keeps pure FP32; RMBG_CUDA_F16_GEMM=0
-        // opts out of the fast path.
-        const char * strict = std::getenv("RMBG_STRICT_MATH");
-        const char * tf32 = std::getenv("NVIDIA_TF32_OVERRIDE");
-        const bool strict_math = (strict && strict[0] && std::strcmp(strict, "0") != 0) ||
-                                 (tf32 && tf32[0] == '0');
-        const char * f16env = std::getenv("RMBG_CUDA_F16_GEMM");
-        // F16 activations measured max|d| = 3.5e-3 (all stages) and 3.46e-3
-        // (stages >= 2 only) — both above the 2e-3 parity gate because Swin-L
-        // MLP hidden activations carry outliers that F16 rounding amplifies
-        // across 18 stacked stage-2 blocks.  Disabled by default; opt in with
-        // RMBG_CUDA_F16_GEMM=1 for experimentation on tolerance-friendly uses.
-        const bool f16_enabled = f16env && f16env[0] && f16env[0] != '0';
-        use_f16_gemm = use_cuda_custom && !strict_math && f16_enabled;
-        const char * min_stage_env = std::getenv("RMBG_CUDA_F16_MIN_STAGE");
-        f16_min_stage = min_stage_env ? std::max(0, std::atoi(min_stage_env)) : 2;
+        // cores run FP16 at twice the TF32 rate.  F16 activations measured
+        // max|d| = 3.5e-3 (all stages) and 3.46e-3 (stages >= 2 only) — both
+        // above the 2e-3 parity gate because Swin-L MLP hidden activations
+        // carry outliers that F16 rounding amplifies across 18 stacked
+        // stage-2 blocks.  Disabled by default; opt in via
+        // BackendOptions::cuda_f16_gemm for experimentation on
+        // tolerance-friendly uses.
+        use_f16_gemm = use_cuda_custom && !options.strict_math && options.cuda_f16_gemm;
+        f16_min_stage = std::max(0, options.cuda_f16_min_stage);
         // Pre-transposed NN weights for the Swin QKV/projection GEMMs.
         // Measured on RTX 3060: fast (TF32) mode is bit-identical either way,
         // and strict (FP32) gains only ~6 ms (643 -> 637 ms) because the TN
         // 128x64 kernel already saturates the K-width weight-load path.  With
         // ~1/3 extra Swin weight memory it stays opt-in.
-        const char * nn_env = std::getenv("RMBG_CUDA_NN_GEMM");
-        use_nn_gemm = use_cuda_custom && nn_env && nn_env[0] && nn_env[0] != '0';
+        use_nn_gemm = use_cuda_custom && options.cuda_nn_gemm;
     }
 
     ggml_tensor * weight(const std::string & name) {
@@ -1077,7 +1068,7 @@ RmbgDeviceGraph::RmbgDeviceGraph() : impl_(new Impl) {}
 RmbgDeviceGraph::~RmbgDeviceGraph() = default;
 
 bool RmbgDeviceGraph::init(ggml_backend_t backend, const WeightMap & weights, int input_size,
-                           std::string & err) {
+                           const BackendOptions & options, std::string & err) {
     impl_.reset(new Impl);
     if (!backend) { err = "null backend"; return false; }
     if (input_size <= 0 || input_size % 32 != 0) {
@@ -1098,7 +1089,7 @@ bool RmbgDeviceGraph::init(ggml_backend_t backend, const WeightMap & weights, in
         return false;
     }
 
-    GraphBuilder b(impl_->ctx_static, impl_->ctx_compute, backend, weights);
+    GraphBuilder b(impl_->ctx_static, impl_->ctx_compute, backend, weights, options);
     impl_->input = ggml_new_tensor_4d(impl_->ctx_compute, GGML_TYPE_F32,
                                       input_size, input_size, 3, 1);
     ggml_set_name(impl_->input, "rmbg_input");
